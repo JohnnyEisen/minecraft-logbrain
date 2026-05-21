@@ -29,6 +29,12 @@ class DuplicateModsDetector(Detector):
     
     # 要求前缀以字母开头，避免将版本号片段误识别为 JAR 名（如 1-11.45.14.jar）
     _JAR_PATTERN = re.compile(r"([A-Za-z][A-Za-z0-9_\-]*-[0-9][A-Za-z0-9\.\-_]+)\.jar", re.IGNORECASE)
+
+    _TEXT_DUP_PATTERN = re.compile(
+        r"(?:found duplicate mod|duplicate mods? found|multiple files for mod|"
+        r"duplicate mod detected|found in both|副本|重复.*mod)",
+        re.IGNORECASE,
+    )
     _mod_patterns: ClassVar[dict[str, re.Pattern[str]]] = {}
     _MOD_PATTERNS_MAX = 100
 
@@ -56,6 +62,17 @@ class DuplicateModsDetector(Detector):
         jar_matches = self._JAR_PATTERN.findall(crash_log)
         jar_counts = Counter(jar_matches)
         
+        # Pre-compute mod-level counts from JAR matches (O(N) instead of O(M*N))
+        mod_jar_counts: Counter = Counter()
+        for jar, count in jar_counts.items():
+            lowjar = jar.lower()
+            base = lowjar.split("-", 1)[0]
+            if base in self.IGNORE_PREFIXES:
+                continue
+            if any(k in lowjar for k in self.IGNORE_KEYWORDS):
+                continue
+            mod_jar_counts[base] += count
+        
         for jar, count in jar_counts.items():
             lowjar = jar.lower()
             base = lowjar.split("-", 1)[0]
@@ -68,22 +85,31 @@ class DuplicateModsDetector(Detector):
             if count >= 15:
                 duplicates.append(f"{jar}.jar appears {count} times")
         
-        for modid, vers in analyzer.mods.items():
-            if not modid:
-                continue
-            low = modid.lower()
-            if not re.search(r"[a-z]", low):
-                continue
-            if any(low.startswith(p) for p in self.IGNORE_PREFIXES):
-                continue
-            
-            pattern = self._get_mod_pattern(modid)
-            occurrences = len(pattern.findall(crash_log))
-            
-            if occurrences >= 15:
-                desc = f"{modid}*.jar appears {occurrences} times"
-                if desc not in duplicates:
-                    duplicates.append(desc)
+        text_dup_match = self._TEXT_DUP_PATTERN.search(crash_log)
+        if text_dup_match:
+            if not duplicates:
+                duplicates.append(text_dup_match.group(0))
+
+        if hasattr(analyzer, "mods") and analyzer.mods:
+            for modid, vers in analyzer.mods.items():
+                if not modid:
+                    continue
+                low = modid.lower()
+                if not re.search(r"[a-z]", low):
+                    continue
+                if any(low.startswith(p) for p in self.IGNORE_PREFIXES):
+                    continue
+
+                occurrences = mod_jar_counts.get(low, 0)
+
+                if occurrences == 0:
+                    pattern = self._get_mod_pattern(modid)
+                    occurrences = len(pattern.findall(crash_log))
+
+                if occurrences >= 15:
+                    desc = f"{modid}*.jar appears {occurrences} times"
+                    if desc not in duplicates:
+                        duplicates.append(desc)
         
         if duplicates:
             unique_dups = list(dict.fromkeys(duplicates))

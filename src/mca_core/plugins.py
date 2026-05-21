@@ -150,7 +150,7 @@ def _check_ast_for_dangerous_calls(tree: ast.AST, filename: str) -> List[str]:
                     dangerous_calls.append(f'Unauthorized import: {module}')
             self.generic_visit(node)
         
-        # Check module-level exec/exec
+        # Check module-level eval/exec
         def visit_Expr(self, node: ast.Expr):
             # Module-level function calls may be malicious code
             if isinstance(node.value, ast.Call):
@@ -292,6 +292,7 @@ class SecurePluginRegistry:
         """
         self._plugins: list[PluginEntry] = []
         self._plugin_hashes: dict[str, str] = {}
+        self._plugin_paths: dict[str, str] = {}
         self._require_signature = require_signature
     
     def register(self, plugin: PluginEntry) -> None:
@@ -333,10 +334,11 @@ class SecurePluginRegistry:
                     if hasattr(mod, 'plugin_entry'):
                         self.register(mod.plugin_entry)
                         
-                        # Store hash for integrity checking
+                        # Store hash and path for integrity checking
                         with open(filepath, 'rb') as f:
                             file_hash = hashlib.sha256(f.read()).hexdigest()
                         self._plugin_hashes[filename] = file_hash
+                        self._plugin_paths[filename] = filepath
                         
                         logger.info(f'Securely loaded plugin: {filename}')
                         loaded_count += 1
@@ -365,10 +367,20 @@ class SecurePluginRegistry:
         modified = []
         
         for filename, original_hash in self._plugin_hashes.items():
-            # Try to find the file
-            # This is a simplified check - in production would need 
-            # to track file paths
-            pass
+            filepath = self._plugin_paths.get(filename)
+            if not filepath or not os.path.exists(filepath):
+                modified.append(filename)
+                continue
+            
+            try:
+                with open(filepath, 'rb') as f:
+                    current_hash = hashlib.sha256(f.read()).hexdigest()
+                if current_hash != original_hash:
+                    modified.append(filename)
+                    logger.warning(f'Plugin integrity check FAILED: {filename}')
+            except Exception as e:
+                logger.warning(f'Cannot verify plugin {filename}: {e}')
+                modified.append(filename)
         
         return (len(modified) == 0, modified)
 

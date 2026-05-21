@@ -9,7 +9,7 @@ from .contracts import AnalysisContext, DetectionResult
 
 class OutOfMemoryDetector(Detector):
     def detect(self, crash_log: str, context: AnalysisContext) -> List[DetectionResult]:
-        txt = (crash_log or "").lower()
+        txt = context.crash_log_lower
         if "outofmemoryerror" in txt or "out of memory" in txt:
             context.add_result(
                 "检测到：内存溢出（OutOfMemoryError）。建议：增加JVM最大堆内存（-Xmx）或检查模组引发的内存泄漏。",

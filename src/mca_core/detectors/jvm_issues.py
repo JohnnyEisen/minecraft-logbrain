@@ -3,8 +3,6 @@ from __future__ import annotations
 import re
 from typing import List, Optional, ClassVar
 
-from mca_core.regex_cache import RegexCache
-
 from .base import Detector
 from .contracts import AnalysisContext, DetectionResult
 
@@ -18,14 +16,23 @@ class JvmIssuesDetector(Detector):
         '-Xincgc': '增量 GC 已在 Java 9 移除',
     }
     
-    _RE_CLASS_VERSION = r'(?:unsupported class file major version|UnsupportedClassVersionError.*?version)\s*(\d+)'
-    _RE_FATAL_EXCEPTION = r'A fatal exception has occurred'
-    _RE_JAVA_VERSION_PATTERNS = [
-        r'Java Version:\s*(\d+(?:\.\d+)?)',
-        r'java\.version\s*=\s*(\d+(?:\.\d+)?)',
-        r'OpenJDK\s+Runtime.*?version\s+"?(\d+)',
+    _RE_CLASS_VERSION: ClassVar[re.Pattern[str]] = re.compile(
+        r'(?:unsupported class file major version|UnsupportedClassVersionError.*?version)\s*(\d+)',
+        re.IGNORECASE
+    )
+    _RE_FATAL_EXCEPTION: ClassVar[re.Pattern[str]] = re.compile(
+        r'A fatal exception has occurred',
+        re.IGNORECASE
+    )
+    _RE_JAVA_VERSION_PATTERNS: ClassVar[list[re.Pattern[str]]] = [
+        re.compile(r'Java Version:\s*(\d+(?:\.\d+)?)', re.IGNORECASE),
+        re.compile(r'java\.version\s*=\s*(\d+(?:\.\d+)?)', re.IGNORECASE),
+        re.compile(r'OpenJDK\s+Runtime.*?version\s+"?(\d+)', re.IGNORECASE),
     ]
-    _RE_JVM_FLAGS = r'JVM\s+Flags?:\s*([^\n]+)'
+    _RE_JVM_FLAGS: ClassVar[re.Pattern[str]] = re.compile(
+        r'JVM\s+Flags?:\s*([^\n]+)',
+        re.IGNORECASE
+    )
 
     def detect(self, crash_log: str, context: AnalysisContext) -> List[DetectionResult]:
         txt = crash_log or ""
@@ -34,11 +41,7 @@ class JvmIssuesDetector(Detector):
         if "NoClassDefFoundError" in txt or "ClassNotFoundException" in txt:
             issues.append("缺少类（NoClassDefFoundError/ClassNotFoundException）可能是Mod或版本不匹配导致。")
         
-        class_version_match = RegexCache.search(
-            self._RE_CLASS_VERSION,
-            txt,
-            flags=re.IGNORECASE
-        )
+        class_version_match = self._RE_CLASS_VERSION.search(txt)
         if class_version_match:
             class_version = int(class_version_match.group(1))
             required_java = class_version - 44
@@ -61,7 +64,7 @@ class JvmIssuesDetector(Detector):
         if "Could not create the Java Virtual Machine" in txt:
             issues.append("JVM 创建失败，检查内存参数或 JVM 参数是否正确。")
         
-        if RegexCache.search(self._RE_FATAL_EXCEPTION, txt, flags=re.IGNORECASE):
+        if self._RE_FATAL_EXCEPTION.search(txt):
             issues.append("JVM 崩溃，可能是内存不足或 JVM 参数问题。")
         
         for msg in issues:
@@ -70,7 +73,7 @@ class JvmIssuesDetector(Detector):
 
     def _extract_java_version(self, txt: str) -> Optional[int]:
         for pattern in self._RE_JAVA_VERSION_PATTERNS:
-            match = RegexCache.search(pattern, txt, flags=re.IGNORECASE)
+            match = pattern.search(txt)
             if match:
                 try:
                     v = int(match.group(1).split('.')[0])
@@ -80,7 +83,7 @@ class JvmIssuesDetector(Detector):
         return None
 
     def _extract_jvm_args(self, txt: str) -> List[str]:
-        match = RegexCache.search(self._RE_JVM_FLAGS, txt, flags=re.IGNORECASE)
+        match = self._RE_JVM_FLAGS.search(txt)
         if match:
             return [a.strip() for a in match.group(1).split() if a.strip().startswith('-')]
         return []

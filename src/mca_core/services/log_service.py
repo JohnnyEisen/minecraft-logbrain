@@ -22,6 +22,9 @@ if TYPE_CHECKING:
 
 from config.constants import DEFAULT_MAX_BYTES
 
+# Tail buffer limit: prevent O(n²) string copy during long tail sessions
+_TAIL_BUFFER_MAX_LINES = 10_000
+
 logger = logging.getLogger(__name__)
 
 
@@ -104,6 +107,28 @@ class LogService:
             原始日志文本
         """
         return self._crash_log
+
+    def append_line(self, line: str) -> None:
+        """
+        高效追加日志行，防止 O(n²) 字符串复制。
+        
+        使用行缓冲池，定期合并，避免每次追加都重建完整字符串。
+        
+        Args:
+            line: 要追加的日志行
+        """
+        if self._cache_lines is None:
+            self._cache_lines = self._crash_log.splitlines() if self._crash_log else []
+        
+        self._cache_lines.append(line)
+        self._cache_type = self.CACHE_LINES
+        self._cache_lower = None
+        
+        if len(self._cache_lines) > _TAIL_BUFFER_MAX_LINES:
+            self._crash_log = "\n".join(self._cache_lines[-_TAIL_BUFFER_MAX_LINES // 2:])
+            self._cache_lines = self._crash_log.splitlines()
+        
+        self._crash_log = "\n".join(self._cache_lines)
 
     def get_lower(self) -> str:
         """

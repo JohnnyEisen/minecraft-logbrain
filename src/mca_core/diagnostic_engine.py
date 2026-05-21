@@ -5,7 +5,7 @@ import logging
 import hashlib
 from collections import OrderedDict
 from datetime import datetime
-from typing import Any
+from typing import Any, Optional
 from mca_core.pattern_repository import get_repository, PatternRepository
 from mca_core.regex_cache import RegexCache
 
@@ -28,8 +28,9 @@ class DiagnosticEngine:
         self._cache_max_size = 100
 
     def _compute_log_hash(self, crash_log: str) -> str:
-        """计算日志内容的哈希值用于缓存键。"""
-        return hashlib.sha256(crash_log.encode('utf-8')).hexdigest()[:16]
+        """计算日志内容的哈希值用于缓存键（仅对前缀哈希提高效率）。"""
+        prefix = crash_log[:65536] if len(crash_log) > 65536 else crash_log
+        return hashlib.sha256(prefix.encode('utf-8')).hexdigest()[:16]
 
     def _load_rules_safely(self):
         patterns = self.repo.load_all_patterns()
@@ -136,7 +137,7 @@ class DiagnosticEngine:
         except Exception:
             return {"user_solutions": []}
 
-    def analyze(self, crash_log: str) -> list[dict[str, str | list[str]]]:
+    def analyze(self, crash_log: str) -> list[dict[str, Any]]:
         """分析崩溃日志，返回匹配的诊断结果。
         
         优化：使用结果缓存避免重复分析相同日志。
@@ -147,8 +148,24 @@ class DiagnosticEngine:
             self._result_cache.move_to_end(log_hash)
             return self._result_cache[log_hash]
         
-        results: list[dict[str, str | list[str]]] = []
+        results: list[dict[str, Any]] = []
         
+        # Tier 3 & 2 integration: Generate AI prompt data for frontend (lazy)
+        ai_prompt = None
+        ai_prompt_generated = False
+        
+        def _ensure_ai_prompt() -> Optional[str]:
+            nonlocal ai_prompt, ai_prompt_generated
+            if ai_prompt_generated:
+                return ai_prompt
+            ai_prompt_generated = True
+            try:
+                from mca_core.prompt_generator import PromptGenerator
+                ai_prompt = PromptGenerator.generate_prompt(crash_log)
+            except Exception:
+                ai_prompt = None
+            return ai_prompt
+
         for pattern in self.rules.get("patterns", []):
             matched = False
             for regex in pattern.get("regex", []):
@@ -161,7 +178,8 @@ class DiagnosticEngine:
                     "type": pattern["id"],
                     "name": pattern["name"],
                     "diagnosis": pattern["diagnosis"],
-                    "solutions": pattern["solutions"]
+                    "solutions": pattern["solutions"],
+                    "ai_prompt": _ensure_ai_prompt(),
                 })
         
         while len(self._result_cache) >= self._cache_max_size:

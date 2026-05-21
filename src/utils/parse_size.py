@@ -6,6 +6,6 @@
 from __future__ import annotations
 
 # 从 tools.generate_mc_log 重新导出，保持兼容性
-from tools.generate_mc_log import parse_size
+from scripts.dev.generate_mc_log import parse_size
 
 __all__ = ["parse_size"]

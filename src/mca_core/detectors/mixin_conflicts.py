@@ -24,6 +24,10 @@ class MixinConflictsDetector(Detector):
         r"Invalid descriptor on\s+([^:\n]+):([^\s\n]+)",
         re.IGNORECASE
     )
+    _RE_INVALID_DESCRIPTOR_LINE = re.compile(
+        r"^.*Invalid descriptor on.*$",
+        re.IGNORECASE | re.MULTILINE
+    )
     
     @classmethod
     def _get_error_patterns(cls) -> List[re.Pattern]:
@@ -76,7 +80,7 @@ class MixinConflictsDetector(Detector):
                     detector=self.get_name(),
                 )
             else:
-                line_match = re.search(r"^.*Invalid descriptor on.*$", txt, flags=re.IGNORECASE | re.MULTILINE)
+                line_match = self._RE_INVALID_DESCRIPTOR_LINE.search(txt)
                 if line_match:
                     context.add_result(
                         f"  Evidence: {line_match.group(0).strip()}",

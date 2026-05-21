@@ -13,7 +13,7 @@ class ShaderWorldConflictsDetector(Detector):
         若 blacklist 命中，输出“已知不兼容”提示；若 whitelist 命中，输出“可能兼容”提示。
         """
         analyzer = context.analyzer
-        txt = (crash_log or "").lower()
+        txt = context.crash_log_lower
         present_mods = {k.lower() for k in analyzer.mods.keys()}
         db = getattr(analyzer, "conflict_db", {}) or {}
         blacklist = db.get("blacklist", [])

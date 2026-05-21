@@ -60,6 +60,10 @@ class AnalysisContext:
     crash_log: str
     results: List[DetectionResult] = field(default_factory=list)
     cause_counts: Dict[str, int] = field(default_factory=dict)
+    crash_log_lower: str = field(default="", init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self.crash_log_lower = (self.crash_log or "").lower()
 
     def _add_result_internal(
         self,

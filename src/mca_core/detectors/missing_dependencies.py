@@ -15,8 +15,10 @@ class MissingDependenciesDetector(Detector):
     )
     _RE_RANGE: ClassVar[re.Pattern[str]] = re.compile(r"^\s*([\[\(])\s*([^,]*?)\s*,\s*([^\)\]]*?)\s*([\)\]])\s*$")
     _RE_MISSING: ClassVar[re.Pattern[str]] = re.compile(
-        r"(?:missing\s+(?:mod\s+)?['\"]?([A-Za-z0-9_.\-]+)['\"]?(?:\s+(?:mod|dependency))?|"
-        r"requires\s+(?:mod\s+)?['\"]?([A-Za-z0-9_.\-]+)['\"]?|"
+        r"(?:missing\s+(?:(?:mod|required|mandatory|unsupported|dependency)\s*:?\s*)*"
+        r"['\"]?([A-Za-z0-9_.\-]+)['\"]?"
+        r"(?:\s+(?:mod|dependency))?|"
+        r"requires\s+(?:mod\s+)?['\"]?([A-Za-z0-9_.\-]+)(?!@)['\"]?|"
         r"missing or unsupported mandatory dependencies:?\s*['\"]?([A-Za-z0-9_.\-]+)?['\"]?)",
         flags=re.IGNORECASE,
     )
@@ -40,14 +42,15 @@ class MissingDependenciesDetector(Detector):
     )
     INVALID_NAMES: ClassVar[frozenset[str]] = frozenset({
         "mods.toml", "sound", "or", "file", "id", "state", "from", 
-        "dependency", "class", "signature", "jar", "json", "mod"
+        "dependency", "class", "signature", "jar", "json", "mod",
+        "version", "versions", "range",
     })
 
     def detect(self, crash_log: str, context: AnalysisContext) -> List[DetectionResult]:
         txt = crash_log or ""
         found = []
 
-        lower_txt = txt.lower()
+        lower_txt = context.crash_log_lower
         has_conflict_only = any(ind in lower_txt for ind in self.CONFLICT_INDICATORS)
         has_missing_indicator = any(ind in lower_txt for ind in self.MISSING_INDICATORS)
         

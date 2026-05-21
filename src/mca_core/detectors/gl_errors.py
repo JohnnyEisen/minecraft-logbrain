@@ -15,9 +15,9 @@ from .contracts import AnalysisContext, DetectionResult
 class GlErrorsDetector(Detector):
     """Detect GPU/OpenGL/driver related errors (strict mode, filter noise)."""
     
-    # Precompiled patterns for performance
     _NOISE_PATTERNS = None
     _ERROR_PATTERNS = None
+    _SNIPPET_PATTERN = None
 
     _RENDER_MOD_KEYWORDS = (
         "iris",
@@ -92,7 +92,7 @@ class GlErrorsDetector(Detector):
                     4,
                 ),
                 (
-                    r"exception_access_violation.*(nvoglv|atio6axx|amduw23g|ig\w+|vulkan-1\.dll)",
+                    r"exception_access_violation.{0,500}?(nvoglv|atio6axx|amduw23g|ig\w+|vulkan-1\.dll)",
                     "Driver Module Access Violation",
                     "Driver Module Crash",
                     4,
@@ -110,13 +110,13 @@ class GlErrorsDetector(Detector):
                     4,
                 ),
                 (
-                    r"shader\s+compil.*error|shader\s+.*failed\s+to\s+compile|glsl\s+.*error|failed\s+to\s+link\s+program|shader\s+link\s+error",
+                    r"shader\s+compil.{0,50}?error|shader\s+.{0,150}?failed\s+to\s+compile|glsl\s+.{0,100}?error|failed\s+to\s+link\s+program|shader\s+link\s+error",
                     "Shader Compile/Link Error",
                     "Shader Pipeline",
                     3,
                 ),
                 (
-                    r"render\s*thread\s+crashed|tesselat.*failed|chunk\s+render.*failed|framebuffer\s+.*incomplete",
+                    r"render\s*thread\s+crashed|tesselat.{0,50}?failed|chunk\s+render.{0,50}?failed|framebuffer\s+.{0,50}?incomplete",
                     "Render Pipeline Failure",
                     "Render Pipeline",
                     3,
@@ -139,11 +139,21 @@ class GlErrorsDetector(Detector):
                     "OpenGL Runtime",
                     2,
                 ),
+                (
+                    r"supported\s+opengl\s+version|required\s+opengl\s+version|opengl\s+version\s+.*too\s+(?:low|old)|update\s+.*graphics\s+drivers.*opengl|incompatible\s+opengl\s+version",
+                    "OpenGL Version Incompatibility",
+                    "Driver Compatibility",
+                    3,
+                ),
             ]
             cls._ERROR_PATTERNS = [
                 (re.compile(pattern, re.IGNORECASE), label, category, severity)
                 for pattern, label, category, severity in patterns
             ]
+            cls._SNIPPET_PATTERN = re.compile(
+                "|".join(f"(?:{p})" for p, _, _, _ in patterns),
+                re.IGNORECASE
+            )
         return cls._ERROR_PATTERNS
 
     @staticmethod
@@ -232,7 +242,7 @@ class GlErrorsDetector(Detector):
         # Extract relevant code snippets
         snippets: List[str] = []
         for line in lines:
-            if any(pattern.search(line) for pattern, _, _, _ in self._get_error_patterns()):
+            if self._SNIPPET_PATTERN.search(line):
                 snippet = line.strip()
                 if snippet and snippet not in snippets:
                     snippets.append(snippet)

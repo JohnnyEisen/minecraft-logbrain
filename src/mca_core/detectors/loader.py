@@ -9,7 +9,7 @@ from .contracts import AnalysisContext, DetectionResult
 class LoaderDetector(Detector):
     def detect(self, crash_log: str, context: AnalysisContext) -> List[DetectionResult]:
         analyzer = context.analyzer
-        txt = (crash_log or "").lower()
+        txt = context.crash_log_lower
         if "forge" in txt and "fml" in txt:
             analyzer.loader_type = "Forge"
         elif "fabric loader" in txt or "fabric" in txt:

@@ -9,10 +9,13 @@
 
 from __future__ import annotations
 
+import re
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, List, Optional
 
 from .contracts import AnalysisContext, DetectionResult
+
+_RE_PACKAGE = re.compile(r'([a-z][a-z0-9_]*\.(?:[a-z][a-z0-9_]*\.)+[a-zA-Z0-9_]+)')
 
 if TYPE_CHECKING:
     pass
@@ -112,3 +115,16 @@ class Detector(ABC):
             置信度值，范围 0.0-1.0
         """
         return 0.8
+
+    @staticmethod
+    def extract_packages(text: str) -> List[str]:
+        """
+        从文本中提取可能是模组包名的字符串。
+        
+        Args:
+            text: 待分析文本
+            
+        Returns:
+            包名列表
+        """
+        return list(set(_RE_PACKAGE.findall(text)))

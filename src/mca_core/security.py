@@ -255,12 +255,15 @@ class IntegrityChecker:
         self._hash_cache: dict = {}
         
     def compute_file_hash(self, filepath: str) -> str:
-        """计算文件的 SHA256 哈希"""
+        """计算文件的 SHA256 哈希（分块读取，避免大文件内存占用）。"""
         import hashlib
         
         try:
+            h = hashlib.sha256()
             with open(filepath, 'rb') as f:
-                return hashlib.sha256(f.read()).hexdigest()
+                for chunk in iter(lambda: f.read(64 * 1024), b''):
+                    h.update(chunk)
+            return h.hexdigest()
         except Exception:
             return ""
     
@@ -535,8 +538,7 @@ class GitHubAutoRepair:
             return (True, f"文件不存在，已从 GitHub 下载")
         
         # 计算本地哈希
-        with open(local_path, 'rb') as f:
-            local_hash = hashlib.sha256(f.read()).hexdigest()
+        local_hash = self.compute_file_hash(local_path)
         
         # 比较哈希
         if local_hash == remote_hash:

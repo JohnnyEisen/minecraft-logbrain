@@ -35,7 +35,7 @@ class VersionConflictsDetector(Detector):
                 r"mod\s+resolution\s+failed",
                 r"dependency\s+requirements\s+not\s+met",
                 r"but\s+version\s+.*\s+is\s+required\s+by",
-                r"is\s+incompatible\s+with\s+mod",
+                r"requires.*but\s+found\s+version",
             ]
             cls._COMPILED_PATTERNS = [re.compile(p, re.IGNORECASE) for p in patterns]
         return cls._COMPILED_PATTERNS
@@ -57,7 +57,7 @@ class VersionConflictsDetector(Detector):
     def detect(self, crash_log: str, context: AnalysisContext) -> List[DetectionResult]:
         analyzer = context.analyzer
         txt = crash_log or ""
-        lower = txt.lower()
+        lower = context.crash_log_lower
         
         conflicts = []
         conflict_details = []

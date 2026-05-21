@@ -8,7 +8,7 @@ from .contracts import AnalysisContext, DetectionResult
 
 class ModConflictsDetector(Detector):
     def detect(self, crash_log: str, context: AnalysisContext) -> List[DetectionResult]:
-        txt = (crash_log or "").lower()
+        txt = context.crash_log_lower
         if "conflict" in txt or "incompatible" in txt or "failed to load mod" in txt:
             lines = []
             for line in txt.splitlines():

@@ -13,7 +13,7 @@ try:
 except ImportError:
     GPUtil = None
 
-from tools.generate_mc_log import generate_batch, SCENARIOS
+from scripts.dev.generate_mc_log import generate_batch, SCENARIOS
 from mca_core.detectors.registry import DetectorRegistry
 from mca_core.file_io import read_text_limited, read_text_head
 from config.constants import LAB_HEAD_READ_SIZE

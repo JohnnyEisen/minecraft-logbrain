@@ -6,6 +6,7 @@ import json
 import logging
 import multiprocessing
 import os
+import re
 import time
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from logging.handlers import RotatingFileHandler
@@ -138,7 +139,6 @@ class BrainCore:
 
         # V-017 Fix: Validate input to prevent injection
         # Only allow alphanumeric, dash, underscore, dot, and version operators
-        import re
         if not re.match(r'^[a-zA-Z0-9_\-.\s><=!~,]+$', s):
             logging.warning(f"Invalid dependency declaration (suspicious characters): {s[:50]}")
             return "", SpecifierSet("")
@@ -830,7 +830,7 @@ class BrainCore:
         if priority <= -1 and process_available and is_cpu_hint and not is_io_hint:
             return "process"
 
-        if strategy == "latency":
+        if strategy == "legacy" or strategy == "latency":
             return "thread"
 
         if strategy == "throughput":
@@ -838,9 +838,8 @@ class BrainCore:
                 return "process"
             return "thread"
 
-        # balanced
-        if process_available and is_cpu_hint and not is_io_hint:
-            return "process"
+        # balanced: safe default, thread pool for everything (avoids IPC overhead).
+        # CPU tasks route to process pool only in "throughput" mode (explicit opt-in).
         return "thread"
 
     _cache_key_cache: dict[int, str] = {}

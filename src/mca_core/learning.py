@@ -16,6 +16,7 @@ MAX_PATTERNS = 500
 MAX_EMBEDDINGS = 100
 MIN_HIT_COUNT = 2
 EMBEDDING_MIN_HITS = 3
+MAX_PATTERN_FILE_SIZE = 10 * 1024 * 1024  # 10MB limit for pattern JSON files
 FEATURE_WEIGHTS = {
     "trait": 3.0,
     "exception": 2.5,
@@ -109,12 +110,19 @@ class CrashPatternLearner:
                 self._pattern_index[key] = i
 
     def _compute_pattern_key(self, features: list[str]) -> str | None:
-        """计算模式的快速查找键。"""
         traits = sorted([f for f in features if f.startswith("trait:")])
         exceptions = sorted([f for f in features if f.startswith("exception:")])[:2]
         if traits or exceptions:
             return "|".join(traits + exceptions)
         return None
+
+    @staticmethod
+    def _get_feature_set(p: dict[str, Any]) -> set[str]:
+        fs = p.get("_feature_set")
+        if fs is None:
+            fs = set(p.get("features", []))
+            p["_feature_set"] = fs
+        return fs
 
     def set_semantic_engine(self, encoder: Any, comparator: Any) -> None:
         self.semantic_encoder = encoder
@@ -131,8 +139,17 @@ class CrashPatternLearner:
     def _load_patterns(self) -> list[dict[str, Any]]:
         if os.path.exists(self.storage_path):
             try:
+                file_size = os.path.getsize(self.storage_path)
+                if file_size > MAX_PATTERN_FILE_SIZE:
+                    logging.getLogger(__name__).warning(
+                        f"Pattern file too large ({file_size} bytes > {MAX_PATTERN_FILE_SIZE}), skipping load"
+                    )
+                    return []
                 with open(self.storage_path, "r", encoding="utf-8") as f:
-                    return json.load(f)
+                    patterns = json.load(f)
+                for p in patterns:
+                    p["_feature_set"] = set(p.get("features", []))
+                return patterns
             except Exception as e:
                 logging.getLogger(__name__).warning(f"Failed to load patterns: {e}")
         return []
@@ -264,19 +281,17 @@ class CrashPatternLearner:
             return FEATURE_WEIGHTS["memory"]
         return FEATURE_WEIGHTS["default"]
 
-    def _calculate_weighted_similarity(self, features1: list[str], features2: list[str]) -> float:
+    def _calculate_weighted_similarity(self, features1: set[str], features2: set[str]) -> float:
         if not features1 or not features2:
             return 0.0
 
-        f1 = set(features1)
-        f2 = set(features2)
-        intersection = f1.intersection(f2)
+        intersection = features1.intersection(features2)
         
         if not intersection:
             return 0.0
 
         weighted_intersection = sum(self._get_feature_weight(f) for f in intersection)
-        weighted_union = sum(self._get_feature_weight(f) for f in f1.union(f2))
+        weighted_union = sum(self._get_feature_weight(f) for f in features1.union(features2))
         
         if weighted_union == 0:
             return 0.0
@@ -294,7 +309,7 @@ class CrashPatternLearner:
 
         return min(base_score + bonus, 1.0)
 
-    def _calculate_similarity(self, features1: list[str], features2: list[str]) -> float:
+    def _calculate_similarity(self, features1: set[str], features2: set[str]) -> float:
         return self._calculate_weighted_similarity(features1, features2)
 
     def _find_similar_pattern(
@@ -314,14 +329,14 @@ class CrashPatternLearner:
             if quick_key and quick_key in self._pattern_index:
                 idx = self._pattern_index[quick_key]
                 p = self._patterns[idx]
-                stored_features = p.get("features", [])
-                base_score = self._calculate_similarity(features, stored_features)
+                stored_fs = self._get_feature_set(p)
+                base_score = self._calculate_similarity(query_features_set, stored_fs)
                 if base_score > 0.8:
                     return p, base_score
 
             for p in self._patterns:
-                stored_features = p.get("features", [])
-                base_score = self._calculate_similarity(features, stored_features)
+                stored_fs = self._get_feature_set(p)
+                base_score = self._calculate_similarity(query_features_set, stored_fs)
                 final_score = base_score
 
                 if vector and self.semantic_comparator and "embedding" in p:
@@ -351,7 +366,7 @@ class CrashPatternLearner:
                 "max_patterns": self.max_patterns
             }
 
-    def learn_from_crash(self, crash_log: str, analysis_result: list[str]) -> None:
+    def learn_from_crash(self, crash_log: str, analysis_result: list[str], _save: bool = True) -> None:
         if not crash_log or not analysis_result:
             return
 
@@ -375,6 +390,7 @@ class CrashPatternLearner:
             else:
                 new_pattern: dict[str, Any] = {
                     "features": features,
+                    "_feature_set": set(features),
                     "result": analysis_result,
                     "hit_count": 1,
                     "created": datetime.now().isoformat(),
@@ -386,7 +402,8 @@ class CrashPatternLearner:
                 self._rebuild_index()
 
             self._prune_patterns()
-            self._save_patterns()
+            if _save:
+                self._save_patterns()
 
     _RE_DETAIL_FILTER = re.compile(r"(缺失|依赖|需要|前置|->|MOD|mod|冲突|不兼容|conflict|required)", re.IGNORECASE)
     _RE_CRITICAL_FILTER = re.compile(r"(重复|duplicate|opengl|glfw|driver)", re.IGNORECASE)
@@ -455,14 +472,16 @@ class CrashPatternLearner:
         return []
 
     def batch_learn(self, crash_data: list[tuple[str, list[str]]]) -> int:
-        """批量学习崩溃模式，返回成功学习的数量。"""
         learned = 0
         for crash_log, analysis_result in crash_data:
             try:
-                self.learn_from_crash(crash_log, analysis_result)
+                self.learn_from_crash(crash_log, analysis_result, _save=False)
                 learned += 1
             except Exception as e:
                 logging.getLogger(__name__).warning(f"Batch learn failed: {e}")
+        if learned > 0:
+            with self._lock:
+                self._save_patterns()
         return learned
 
     def export_patterns(self, export_path: str) -> bool:
@@ -479,6 +498,12 @@ class CrashPatternLearner:
     def import_patterns(self, import_path: str, merge: bool = True) -> int:
         """导入模式，返回导入的数量。"""
         try:
+            file_size = os.path.getsize(import_path)
+            if file_size > MAX_PATTERN_FILE_SIZE:
+                logging.getLogger(__name__).warning(
+                    f"Import pattern file too large ({file_size} bytes > {MAX_PATTERN_FILE_SIZE}), skipping"
+                )
+                return 0
             with open(import_path, "r", encoding="utf-8") as f:
                 imported = json.load(f)
 
@@ -495,6 +520,7 @@ class CrashPatternLearner:
                     for p in imported:
                         key = self._compute_pattern_key(p.get("features", []))
                         if key and key not in existing_keys:
+                            p["_feature_set"] = set(p.get("features", []))
                             self._patterns.append(p)
                             existing_keys.add(key)
 

@@ -118,6 +118,13 @@ def read_text_head(path: str, max_bytes: int = DEFAULT_MAX_BYTES) -> str:
         文件头部内容，失败时返回空字符串。
     """
     try:
+        size = os.path.getsize(path)
+        if size > MAX_FILE_SIZE_HARD_LIMIT:
+            import logging
+            logging.getLogger(__name__).warning(
+                f"文件超过硬性大小上限 ({size} bytes > {MAX_FILE_SIZE_HARD_LIMIT} bytes): {path}"
+            )
+            return ""
         with open(path, "r", encoding="utf-8", errors="ignore") as f:
             return f.read(max_bytes)
     except Exception as e:
