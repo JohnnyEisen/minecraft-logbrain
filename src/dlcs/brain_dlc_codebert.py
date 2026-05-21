@@ -178,49 +178,54 @@ class CodeBertDLC(BrainDLC):
     # --- mHC 流形约束相关 ---
 
     def _setup_mhc(self) -> None:
-        """根据硬件配置设置 mHC 参数。
+        """根据实际运行设备配置 mHC 参数。
 
         mHC (Manifold-Constrained Hyper-Connections) 配置策略：
         - dGPU (>= 8GB): 完整 mHC，2 层，5 次 Sinkhorn 迭代
         - dGPU (< 8GB): 轻量 mHC，1 层，3 次 Sinkhorn 迭代
-        - iGPU: 平衡 mHC，1 层，3 次 Sinkhorn 迭代
-        - CPU: 极简 mHC，1 层，2 次 Sinkhorn 迭代（节省计算）
+        - iGPU (Apple MPS): 平衡 mHC，1 层，3 次 Sinkhorn 迭代
+        - CPU: 极简 mHC，1 层，2 次 Sinkhorn 迭代
         """
-        hw_dlc = None
-        if hasattr(self.brain, "dlcs"):
-            hw_dlc = self.brain.dlcs.get("Hardware Accelerator")
+        device_type = self.device.type  # 已在 _initialize 中确定
 
-        suggested_device = "cpu"
+        # 获取显存大小（GPU 时通过 torch，CPU 时通过 Hardware DLC）
         available_memory_gb = 8.0
+        if device_type == "cuda":
+            try:
+                available_memory_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+            except Exception:
+                pass
+        else:
+            hw_dlc = None
+            if hasattr(self.brain, "dlcs"):
+                hw_dlc = self.brain.dlcs.get("Hardware Accelerator")
+            if hw_dlc is not None:
+                available_memory_gb = getattr(hw_dlc, "get_total_memory_gb", lambda: 8.0)()
 
-        if hw_dlc is not None:
-            suggested_device = getattr(hw_dlc, "get_device_str", lambda: "cpu")()
-            available_memory_gb = getattr(hw_dlc, "get_total_memory_gb", lambda: 8.0)()
-
-        if suggested_device == "cuda" and available_memory_gb >= 8:
+        if device_type == "cuda" and available_memory_gb >= 8:
             self._enable_mhc = True
             self._sinkhorn_iterations = 5
             self._projection_interval = 500
             self._residual_scale = 0.1
             self._enable_attnres = True
             self._attnres_num_heads = 8
-            logging.info(f"mHC 配置: dGPU 完整模式 (iter={self._sinkhorn_iterations}), AttnRes: {self._attnres_num_heads} heads")
-        elif suggested_device == "cuda" and available_memory_gb >= 4:
+            logging.info(f"mHC 配置: dGPU 完整模式 ({available_memory_gb:.1f}GB, iter={self._sinkhorn_iterations}), AttnRes: {self._attnres_num_heads} heads")
+        elif device_type == "cuda":
             self._enable_mhc = True
             self._sinkhorn_iterations = 3
             self._projection_interval = 300
             self._residual_scale = 0.05
             self._enable_attnres = True
             self._attnres_num_heads = 4
-            logging.info(f"mHC 配置: dGPU 轻量模式 (iter={self._sinkhorn_iterations}), AttnRes: {self._attnres_num_heads} heads")
-        elif suggested_device == "mps":
+            logging.info(f"mHC 配置: dGPU 轻量模式 ({available_memory_gb:.1f}GB, iter={self._sinkhorn_iterations}), AttnRes: {self._attnres_num_heads} heads")
+        elif device_type == "mps":
             self._enable_mhc = True
             self._sinkhorn_iterations = 3
             self._projection_interval = 300
             self._residual_scale = 0.05
             self._enable_attnres = True
             self._attnres_num_heads = 4
-            logging.info(f"mHC 配置: iGPU 平衡模式 (iter={self._sinkhorn_iterations}), AttnRes: {self._attnres_num_heads} heads")
+            logging.info(f"mHC 配置: iGPU 平衡模式 (MPS, iter={self._sinkhorn_iterations}), AttnRes: {self._attnres_num_heads} heads")
         else:
             self._enable_mhc = True
             self._sinkhorn_iterations = 2

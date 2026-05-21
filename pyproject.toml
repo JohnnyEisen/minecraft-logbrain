@@ -54,7 +54,7 @@ docs = [
 ]
 
 [project.scripts]
-mca = "mca_core.launcher:launch_app"
+mca = "main:main"
 brain = "brain_system.cli:main"
 brain-ui = "brain_system.ui:main"
 

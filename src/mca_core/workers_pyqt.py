@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import re
+import threading
 import time
 from collections import Counter, defaultdict
 from typing import TYPE_CHECKING, Any, Optional
@@ -19,10 +20,23 @@ if TYPE_CHECKING:
     from matplotlib.figure import Figure
 
 from mca_core.detectors import DetectorRegistry
+from mca_core.task_processor import (
+    AnalysisHost,
+    bootstrap_semantic_engine,
+    ensure_semantic_units,
+    run_semantic_analysis as _run_semantic_analysis_core,
+    _RE_MOD_JAR,
+    _RE_MISSING_MOD,
+    _RE_MOD_REQUIRES,
+    _RE_INVALID_INJECTION,
+    _RE_INVALID_DESCRIPTOR,
+    _RE_INVALID_DESCRIPTOR_LINE,
+)
+PyQtAnalyzerHost = AnalysisHost
 from mca_core.diagnostic_engine import DiagnosticEngine
 
 try:
-    from tools.generate_mc_log import generate_batch
+    from scripts.dev.generate_mc_log import generate_batch
     HAS_LOG_GENERATOR: bool = True
 except Exception:
     generate_batch = None
@@ -59,9 +73,6 @@ class PyQtAnalyzerHost:
         Args:
             log_text: 崩溃日志文本
         """
-        import re
-        import threading
-        
         self.crash_log = log_text
         self.analysis_results = []
         self.lock = threading.RLock()
@@ -81,16 +92,13 @@ class PyQtAnalyzerHost:
         Args:
             cause_label: 崩溃原因标签
         """
-        import re
         with self.lock:
             self.cause_counts[cause_label] += 1
 
     def _extract_mods(self) -> None:
         """从日志中提取模组信息。"""
-        import re
-        pattern = r"(?:^|[\/\\])([a-zA-Z0-9_\-]+)-(\d[\w\.\-]+)\.jar"
         seen = set()
-        for m in re.finditer(pattern, self.crash_log):
+        for m in _RE_MOD_JAR.finditer(self.crash_log):
             raw_id, ver = m.groups()
             modid = re.sub(r"[^A-Za-z0-9_.\-]", "", raw_id).strip()
             if modid and modid not in seen:
@@ -99,14 +107,48 @@ class PyQtAnalyzerHost:
 
     def _extract_dependency_pairs(self) -> None:
         """从日志中提取依赖关系对。"""
-        import re
-        p1 = r"Missing mod '([^']+)' needed by '([^']+)'"
-        for m in re.finditer(p1, self.crash_log):
+        for m in _RE_MISSING_MOD.finditer(self.crash_log):
             self.dependency_pairs.add((m.group(2), m.group(1)))
-        p2 = r"Mod ([^ ]+) requires ([^ \n]+)"
-        for m in re.finditer(p2, self.crash_log):
+        for m in _RE_MOD_REQUIRES.finditer(self.crash_log):
             self.dependency_pairs.add((m.group(1), m.group(2)))
 
+
+# ============================================================
+# 语义分析候选缓存 - Semantic Candidate Cache (class-level)
+# ============================================================
+
+_SEMANTIC_CANDIDATES = [
+    (
+        "渲染管线/覆盖层冲突",
+        "日志包含 Render thread、OpenGL/Vulkan、RTSSHooks64.dll 或 nvspcap64.dll，画面卡死或频繁闪色。",
+        "先关闭 RTSS、MSI Afterburner、NVIDIA Overlay，再切换渲染后端复测。",
+        ["render thread", "opengl", "vulkan", "rtsshooks64.dll", "nvspcap64.dll"],
+    ),
+    (
+        "模组依赖缺失或版本冲突",
+        "日志出现 Missing mod、requires、NoSuchMethodError、ClassNotFoundException 等依赖报错。",
+        "统一模组与 Loader 版本，优先补齐缺失依赖并清理重复模组。",
+        ["missing mod", "requires", "nosuchmethoderror", "classnotfoundexception", "noclassdeffounderror"],
+    ),
+    (
+        "Mixin 注入失败",
+        "日志出现 InvalidInjectionException、mixin apply failed、descriptor mismatch 等关键词。",
+        "检查目标方法签名与映射版本，移除过期注入描述符。",
+        ["invalidinjectionexception", "invalid descriptor on", "mixin apply failed", "descriptor mismatch"],
+    ),
+    (
+        "JNI/显卡驱动级崩溃",
+        "日志或 hs_err 包含 EXCEPTION_ACCESS_VIOLATION、native crash、驱动模块。",
+        "优先排查本地 DLL 与驱动版本，关闭第三方图形钩子后重测。",
+        ["exception_access_violation", "native crash", "hs_err", "jni"],
+    ),
+    (
+        "内存或 JVM 参数问题",
+        "日志出现 OutOfMemoryError、GC overhead limit exceeded、Java heap space。",
+        "调整 JVM 内存参数，减少高占用模组并检查后台占用。",
+        ["outofmemoryerror", "gc overhead", "java heap space", "metaspace"],
+    ),
+]
 
 # ============================================================
 # 工作线程信号类 - Worker Signal Classes
@@ -125,6 +167,7 @@ class AIInitSignals(QObject):
     """AI 初始化工作线程的信号定义。"""
     
     done = pyqtSignal(bool, object)
+    progress = pyqtSignal(str)
 
 
 class AutoTestSignals(QObject):
@@ -143,10 +186,13 @@ class AutoTestSignals(QObject):
 # ============================================================
 
 class AIInitWorker(QThread):
-    """AI 引擎初始化工作线程。"""
+    """AI 引擎初始化工作线程（带进度反馈和超时控制）。"""
     
     config_path: Optional[str]
     signals: AIInitSignals
+    _timeout_secs: float
+
+    AI_INIT_TIMEOUT = 120.0
 
     def __init__(self, config_path: Optional[str]) -> None:
         """
@@ -158,50 +204,45 @@ class AIInitWorker(QThread):
         super().__init__()
         self.config_path = config_path
         self.signals = AIInitSignals()
+        self._timeout_secs = self.AI_INIT_TIMEOUT
 
     def _bootstrap_semantic_engine(self, brain: Any) -> tuple[bool, str]:
-        """在 AI 初始化阶段预热并校验语义引擎。"""
-        if not hasattr(brain, "register_dlc"):
-            return False, "BrainCore 不支持 DLC 挂载接口"
-
-        try:
-            dlcs = getattr(brain, "dlcs", {})
-
-            if "Hardware Accelerator" not in dlcs:
-                from dlcs.brain_dlc_hardware import HardwareAcceleratorDLC
-                brain.register_dlc(HardwareAcceleratorDLC(brain))
-
-            if "Semantic Engine (CodeBERT + UDMA)" not in dlcs:
-                from dlcs.brain_dlc_codebert import CodeBertDLC
-                brain.register_dlc(CodeBertDLC(brain))
-
-            semantic = getattr(brain, "dlcs", {}).get("Semantic Engine (CodeBERT + UDMA)")
-            if semantic is None:
-                return False, "语义引擎 DLC 未挂载"
-
-            units = semantic.provide_computational_units()
-            checker = units.get("is_ready")
-            if not callable(checker):
-                return False, "语义引擎缺少就绪检查接口"
-
-            if not bool(checker()):
-                return False, "语义模型尚未完成初始化"
-
-            return True, ""
-        except Exception as e:
-            return False, f"语义模型启动失败: {e}"
+        return bootstrap_semantic_engine(brain, progress_callback=self.signals.progress.emit)
 
     def run(self) -> None:
         """执行 AI 引擎初始化。"""
         if not HAS_BRAIN or BrainCore is None:
             self.signals.done.emit(False, "BrainCore 模块不可用")
             return
+        
+        t_start = time.time()
+        
+        def _check_timeout(phase: str) -> bool:
+            elapsed = time.time() - t_start
+            if elapsed > self._timeout_secs:
+                self.signals.done.emit(False, f"初始化超时 ({phase}: {elapsed:.0f}s > {self._timeout_secs}s)")
+                return True
+            return False
+        
         try:
+            self.signals.progress.emit("正在创建 BrainCore 实例...")
             brain = BrainCore(config_path=self.config_path)
+            
+            if _check_timeout("BrainCore 创建"):
+                return
+            
+            self.signals.progress.emit("正在加载硬件加速器 DLC...")
             ok, reason = self._bootstrap_semantic_engine(brain)
+            
+            if _check_timeout("语义引擎引导"):
+                return
+            
             if not ok:
                 self.signals.done.emit(False, reason)
                 return
+            
+            elapsed = time.time() - t_start
+            self.signals.progress.emit(f"初始化完成 (耗时 {elapsed:.1f}s)")
             self.signals.done.emit(True, brain)
         except Exception as e:
             self.signals.done.emit(False, str(e))
@@ -302,40 +343,53 @@ class AutoTestWorker(QThread):
                         with open(fp, 'r', encoding='utf-8', errors='replace') as f:
                             log_content = f.read()
                         
-                        all_results: list[str] = []
+                        rule_count = 0
+                        detector_hits: list[str] = []
+                        rule_types: set[str] = set()
+                        detector_types: set[str] = set()
                         
                         if self.engine:
                             engine_results = self.engine.analyze(log_content)
                             for res in engine_results:
-                                all_results.append(f"[规则] {res.get('name', '未知')}")
+                                rtype = res.get("type", res.get("name", "未知"))
+                                rule_count += 1
+                                rule_types.add(rtype)
                         
                         registry = DetectorRegistry.get_instance()
                         host = PyQtAnalyzerHost(log_content)
-                        registry.run_all_parallel(host)
+                        detection_results = registry.run_all_parallel(host)
                         
-                        if host.analysis_results:
-                            for res in host.analysis_results:
-                                all_results.append(f"[检测器] {res[:50]}..." if len(res) > 50 else f"[检测器] {res}")
+                        for dr in detection_results:
+                            detector_name = dr.detector
+                            detector_hits.append(detector_name)
+                            detector_types.add(detector_name)
                         
-                        if all_results:
+                        total_hits = rule_count + len(detector_hits)
+                        
+                        if total_hits > 0:
                             success_count += 1
-                            result_summary = "; ".join(all_results[:3])
-                            self.signals.log.emit(f"    ✓ 发现问题: {result_summary}")
+                            parts: list[str] = []
+                            if rule_types:
+                                parts.append("规则: " + ", ".join(sorted(rule_types)[:3]))
+                            if detector_types:
+                                parts.append("检测: " + ", ".join(sorted(detector_types)[:3]))
+                            self.signals.log.emit(f"    ✓ 检出({total_hits}项): {' | '.join(parts)}")
                         else:
                             fail_count += 1
-                            self.signals.log.emit(f"    ✗ 未发现问题")
+                            self.signals.log.emit(f"    ✗ 未检出问题 (预期: {scenario})")
                         
                         analysis_results.append({
                             "file": fp,
                             "scenario": scenario,
-                            "found_issues": len(all_results) > 0,
-                            "issue_count": len(all_results),
-                            "issues": all_results[:5] if all_results else []
+                            "found_issues": total_hits > 0,
+                            "issue_count": total_hits,
+                            "rule_types": sorted(rule_types),
+                            "detector_types": sorted(detector_types),
                         })
                         
                         self.signals.analysis_result.emit(fp, scenario, {
-                            "found_issues": len(all_results) > 0,
-                            "issue_count": len(all_results)
+                            "found_issues": total_hits > 0,
+                            "issue_count": total_hits
                         })
                     except Exception as e:
                         fail_count += 1
@@ -369,6 +423,29 @@ class AutoTestWorker(QThread):
                 self.signals.log.emit(f"  分析失败: {fail_count} 份")
                 detection_rate = success_count / total * 100 if total > 0 else 0
                 self.signals.log.emit(f"  检出率: {detection_rate:.1f}%")
+                if analysis_results:
+                    from collections import defaultdict
+                    scenario_hits = Counter()
+                    scenario_rule_types: dict[str, set[str]] = defaultdict(set)
+                    scenario_detector_types: dict[str, set[str]] = defaultdict(set)
+                    for r in analysis_results:
+                        sc = r["scenario"]
+                        if r["found_issues"]:
+                            scenario_hits[sc] += 1
+                        for rt in r.get("rule_types", []):
+                            scenario_rule_types[sc].add(rt)
+                        for dt in r.get("detector_types", []):
+                            scenario_detector_types[sc].add(dt)
+                    self.signals.log.emit(f"\n  按场景检出统计:")
+                    for sc in sorted(scenario_hits.keys()):
+                        sc_total = sum(1 for r in analysis_results if r["scenario"] == sc)
+                        parts = []
+                        if sc in scenario_rule_types and scenario_rule_types[sc]:
+                            parts.append("规则: " + ", ".join(sorted(scenario_rule_types[sc])[:3]))
+                        if sc in scenario_detector_types and scenario_detector_types[sc]:
+                            parts.append("检测器: " + ", ".join(sorted(scenario_detector_types[sc])[:3]))
+                        type_info = " | ".join(parts) if parts else "(统一匹配)"
+                        self.signals.log.emit(f"    {sc}: {scenario_hits[sc]}/{sc_total} 检出 → {type_info}")
             self.signals.log.emit(f"  总耗时: {total_time:.2f}s")
             
         except Exception as e:
@@ -406,149 +483,10 @@ class AnalysisWorker(QThread):
         self.signals = WorkerSignals()
 
     def _ensure_semantic_units(self) -> tuple[Optional[Any], Optional[Any], str]:
-        """确保语义计算单元可用，必要时按依赖顺序挂载 DLC。"""
-        if self.brain is None:
-            return None, None, "智脑核心未初始化"
-
-        if hasattr(self.brain, "get_computational_unit"):
-            try:
-                encode_text = self.brain.get_computational_unit("encode_text")
-                calculate_similarity = self.brain.get_computational_unit("calculate_similarity")
-                return encode_text, calculate_similarity, ""
-            except Exception:
-                pass
-
-        if not hasattr(self.brain, "register_dlc"):
-            return None, None, "当前智脑核心不支持 DLC 动态挂载"
-
-        try:
-            dlcs = getattr(self.brain, "dlcs", {})
-
-            if "Hardware Accelerator" not in dlcs:
-                from dlcs.brain_dlc_hardware import HardwareAcceleratorDLC
-                self.brain.register_dlc(HardwareAcceleratorDLC(self.brain))
-
-            if "Semantic Engine (CodeBERT + UDMA)" not in dlcs:
-                from dlcs.brain_dlc_codebert import CodeBertDLC
-                self.brain.register_dlc(CodeBertDLC(self.brain))
-        except Exception as e:
-            return None, None, f"语义引擎加载失败: {e}"
-
-        if hasattr(self.brain, "get_computational_unit"):
-            try:
-                encode_text = self.brain.get_computational_unit("encode_text")
-                calculate_similarity = self.brain.get_computational_unit("calculate_similarity")
-                return encode_text, calculate_similarity, ""
-            except Exception as e:
-                return None, None, f"语义单元不可用: {e}"
-
-        return None, None, "智脑核心缺少语义计算接口"
+        return ensure_semantic_units(self.brain)
 
     def _run_semantic_analysis(self) -> str:
-        """执行智脑语义分析。"""
-        if self.brain is None:
-            return "MCA 智脑系统未启动。"
-
-        # 强规则优先：明确的 Mixin 注入描述符错误，直接给出结论，避免语义候选误导排序。
-        invalid_injection = re.search(r"InvalidInjectionException", self.log_text or "", flags=re.IGNORECASE)
-        if invalid_injection:
-            descriptor = re.search(
-                r"Invalid descriptor on\s+([^:\n]+):([^\s\n]+)",
-                self.log_text or "",
-                flags=re.IGNORECASE,
-            )
-
-            lines = [
-                "强规则命中（高置信度）:",
-                "1. Mixin 注入描述符不匹配（InvalidInjectionException）",
-            ]
-
-            if descriptor:
-                lines.append(f"   关键故障点: {descriptor.group(1)}:{descriptor.group(2)}")
-            else:
-                evidence = re.search(r"^.*Invalid descriptor on.*$", self.log_text or "", flags=re.IGNORECASE | re.MULTILINE)
-                if evidence:
-                    lines.append(f"   关键证据: {evidence.group(0).strip()}")
-
-            lines.append("   建议: 优先更新或移除该 Mixin 所属模组，并使用与当前 Minecraft/Loader 匹配的构建。")
-            lines.append("提示: 已命中明确根因规则，已跳过通用语义候选排序。")
-            return "\n".join(lines)
-
-        if hasattr(self.brain, "analyze"):
-            result = self.brain.analyze(self.log_text)
-            return result if isinstance(result, str) else str(result)
-
-        encode_text, calculate_similarity, reason = self._ensure_semantic_units()
-        if encode_text is None or calculate_similarity is None:
-            return f"MCA 智脑系统已加载，但语义模型未就绪。\n原因: {reason}"
-
-        log_vec = encode_text(self.log_text)
-        if not log_vec:
-            return "MCA 智脑系统已加载，但语义模型暂未返回有效向量。"
-
-        candidates = [
-            (
-                "渲染管线/覆盖层冲突",
-                "日志包含 Render thread、OpenGL/Vulkan、RTSSHooks64.dll 或 nvspcap64.dll，画面卡死或频繁闪色。",
-                "先关闭 RTSS、MSI Afterburner、NVIDIA Overlay，再切换渲染后端复测。",
-                ["render thread", "opengl", "vulkan", "rtsshooks64.dll", "nvspcap64.dll"],
-            ),
-            (
-                "模组依赖缺失或版本冲突",
-                "日志出现 Missing mod、requires、NoSuchMethodError、ClassNotFoundException 等依赖报错。",
-                "统一模组与 Loader 版本，优先补齐缺失依赖并清理重复模组。",
-                ["missing mod", "requires", "nosuchmethoderror", "classnotfoundexception", "noclassdeffounderror"],
-            ),
-            (
-                "Mixin 注入失败",
-                "日志出现 InvalidInjectionException、mixin apply failed、descriptor mismatch 等关键词。",
-                "检查目标方法签名与映射版本，移除过期注入描述符。",
-                ["invalidinjectionexception", "invalid descriptor on", "mixin apply failed", "descriptor mismatch"],
-            ),
-            (
-                "JNI/显卡驱动级崩溃",
-                "日志或 hs_err 包含 EXCEPTION_ACCESS_VIOLATION、native crash、驱动模块。",
-                "优先排查本地 DLL 与驱动版本，关闭第三方图形钩子后重测。",
-                ["exception_access_violation", "native crash", "hs_err", "jni"],
-            ),
-            (
-                "内存或 JVM 参数问题",
-                "日志出现 OutOfMemoryError、GC overhead limit exceeded、Java heap space。",
-                "调整 JVM 内存参数，减少高占用模组并检查后台占用。",
-                ["outofmemoryerror", "gc overhead", "java heap space", "metaspace"],
-            ),
-        ]
-
-        log_lower = (self.log_text or "").lower()
-        scored: list[tuple[float, float, str, str, int]] = []
-        for title, pattern_text, suggestion, keywords in candidates:
-            pattern_vec = encode_text(pattern_text)
-            if not pattern_vec:
-                continue
-            semantic_score = float(calculate_similarity(log_vec, pattern_vec))
-            hit_count = sum(1 for kw in keywords if kw in log_lower)
-            keyword_score = min(1.0, hit_count / max(1, len(keywords)))
-            blended_score = semantic_score * 0.55 + keyword_score * 0.45
-            scored.append((blended_score, semantic_score, title, suggestion, hit_count))
-
-        if not scored:
-            return "MCA 智脑系统已加载，语义模型可用，但当前日志未匹配到稳定语义候选。"
-
-        scored.sort(key=lambda x: x[0], reverse=True)
-        top_matches = scored[:3]
-
-        lines = ["语义匹配候选（CodeBERT）:"]
-        for idx, (score, semantic_score, title, suggestion, hit_count) in enumerate(top_matches, start=1):
-            lines.append(f"{idx}. {title}（综合分: {score:.3f}，语义相似度: {semantic_score:.3f}，关键词命中: {hit_count}）")
-            lines.append(f"   建议: {suggestion}")
-
-        best_score = top_matches[0][0]
-        if best_score < 0.25:
-            lines.append("提示: 语义匹配置信度较低，建议结合完整崩溃栈与模组列表复核。")
-        elif best_score >= 0.45:
-            lines.append("提示: 语义匹配置信度较高，可优先按首项建议处理。")
-
-        return "\n".join(lines)
+        return _run_semantic_analysis_core(self.brain, self.log_text)
 
     def run(self) -> None:
         """执行分析。"""

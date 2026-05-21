@@ -144,7 +144,7 @@ class HardwareAcceleratorDLC(BrainDLC):
             }
         }
         
-        # 检测 NVIDIA GPU (通过 import cupy)
+        # 检测 NVIDIA GPU (优先通过 cupy，回退至 PyTorch)
         try:
             with warnings.catch_warnings():
                 warnings.filterwarnings("ignore", ".*CUDA path.*")
@@ -163,7 +163,28 @@ class HardwareAcceleratorDLC(BrainDLC):
         except ImportError:
             pass  # 没装 cupy
         except Exception as e:
-            logging.warning(f"GPU 检测异常: {e}")
+            logging.warning(f"GPU 检测异常 (cupy): {e}")
+
+        # 回退: 通过 PyTorch 检测 CUDA GPU
+        if not any(d.get("type") == "cuda" for d in devices.values()):
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    for i in range(torch.cuda.device_count()):
+                        name = torch.cuda.get_device_name(i)
+                        props = torch.cuda.get_device_properties(i)
+                        mem = props.total_memory
+                        devices[f"gpu_{i}"] = {
+                            "type": "cuda",
+                            "index": i,
+                            "name": name,
+                            "memory_mb": mem // (1024*1024)
+                        }
+                    logging.info("通过 PyTorch 检测到 %d 个 CUDA GPU", torch.cuda.device_count())
+            except ImportError:
+                pass
+            except Exception as e:
+                logging.warning(f"GPU 检测异常 (torch): {e}")
 
         return devices
 

@@ -69,11 +69,6 @@ LOGS_DIR: Final[str] = os.path.join(ROOT_DIR, "logs")
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(LOGS_DIR, exist_ok=True)
 
-
-# ============================================================
-# UI 常量 - UI Constants
-# ============================================================
-
 WINDOW_TITLE: Final[str] = "Minecraft Crash Analyzer v1.5.0"
 WINDOW_DEFAULT_SIZE: Final[str] = "1280x850"
 WINDOW_MIN_WIDTH: Final[int] = 1000
@@ -122,6 +117,7 @@ RULES_DIR: Final[str] = os.path.join(DATA_DIR, "rules")
 HISTORY_DIR: Final[str] = os.path.join(DATA_DIR, "history")
 
 HISTORY_FILE: Final[str] = os.path.join(HISTORY_DIR, "crash_analysis_history.csv")
+
 DEPENDENCY_FILE: Final[str] = os.path.join(DATA_DIR, "mod_dependencies.csv")
 MOD_DB_FILE: Final[str] = os.path.join(RULES_DIR, "mod_database.json")
 LOADER_DB_FILE: Final[str] = os.path.join(RULES_DIR, "loader_database.json")
@@ -134,10 +130,18 @@ AUTO_TESTS_DIR: Final[str] = os.path.join(DATA_DIR, "auto_tests")
 LAB_RUNS_DIR: Final[str] = os.path.join(DATA_DIR, "lab_runs")
 LEARNED_PATTERNS_FILE: Final[str] = os.path.join(DATA_DIR, "learned_patterns.json")
 
-os.makedirs(RULES_DIR, exist_ok=True)
-os.makedirs(HISTORY_DIR, exist_ok=True)
-os.makedirs(AUTO_TESTS_DIR, exist_ok=True)
-os.makedirs(LAB_RUNS_DIR, exist_ok=True)
+_created_dirs: set[str] = set()
+
+def ensure_app_dirs() -> None:
+    _all = [
+        DATA_DIR, LOGS_DIR, RULES_DIR, HISTORY_DIR,
+        AUTO_TESTS_DIR, LAB_RUNS_DIR,
+    ]
+    for d in _all:
+        if d in _created_dirs:
+            continue
+        os.makedirs(d, exist_ok=True)
+        _created_dirs.add(d)
 
 
 # ============================================================

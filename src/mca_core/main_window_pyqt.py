@@ -17,7 +17,7 @@ import time
 from collections import Counter, defaultdict
 from typing import TYPE_CHECKING, Any, Optional
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QAction, QActionGroup, QColor
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -54,8 +54,16 @@ from mca_core.services.config_service import ConfigService
 from mca_core.diagnostic_engine import DiagnosticEngine
 from mca_core.services.log_service import LogService
 from mca_core.services.system_service import SystemService
+from mca_core.analysis_engine import (
+    load_gpu_rules as _get_gpu_rules,
+    format_hardware_report,
+    scan_mods_directory,
+    write_dep_csv,
+    read_history_csv,
+    build_nx_graph,
+)
 from mca_core.screen_adapter_pyqt import ScreenAdapter, WindowStateManager
-from mca_core.styles_pyqt import SILICONE_CSS
+from mca_core.styles_pyqt import CSS
 try:
     from mca_core.brain_animation_pyqt import BrainMonitorWidget
 except Exception:
@@ -100,21 +108,32 @@ MODE_DESCRIPTIONS = [
     ("激进", "高性能 - 减少 GC 频率，大幅提升大文件分析速度，但内存占用较高。")
 ]
 
-SCENARIOS: dict[str, str] = {
-    "normal": "正常日志",
-    "oom": "内存溢出",
-    "missing_dependency": "缺失前置",
-    "gl_error": "OpenGL 错误",
-    "mixin_conflict": "Mixin 冲突",
-    "version_conflict": "版本冲突",
-    "compound": "复合错误",
-    "adversarial": "对抗样本",
-}
+_RE_MOD_JAR = re.compile(r"([a-zA-Z0-9_\-]+)-(\d[\w\.\-]+)\.jar")
+
+# GPU Issues JSON 缓存 (避免每次硬件刷新都重新读取)
+_gpu_rules_cache: Optional[dict] = None
+
+
+def _get_gpu_rules() -> dict[str, Any]:
+    global _gpu_rules_cache
+    if _gpu_rules_cache is not None:
+        return _gpu_rules_cache
+    try:
+        if os.path.exists(GPU_ISSUES_FILE):
+            with open(GPU_ISSUES_FILE, "r", encoding="utf-8") as fp:
+                loaded = json.load(fp)
+                if isinstance(loaded, dict):
+                    _gpu_rules_cache = loaded
+                    return loaded
+    except Exception:
+        pass
+    _gpu_rules_cache = {}
+    return {}
 
 
 class SiliconeCapsuleApp(MenuMixin, AutoTestMixin, AnalysisMixin, QMainWindow):
     """
-    MCA 智脑系统主应用窗口。
+    MCA 主应用窗口。
     
     提供现代化的拟态风格 UI，用于 Minecraft 崩溃日志分析。
     
@@ -143,32 +162,18 @@ class SiliconeCapsuleApp(MenuMixin, AutoTestMixin, AnalysisMixin, QMainWindow):
     tail_line_signal = pyqtSignal(str)
 
     def _set_brain_monitor_state(self, state: str) -> None:
-        """同步大脑动画状态。"""
+        """同步状态动画和短标签。"""
         monitor = getattr(self, "brain_monitor", None)
         if monitor is None:
             return
         try:
-            if state == "loading":
-                monitor.start_loading()
-            elif state == "active":
-                monitor.start_active()
-            elif state == "error":
-                monitor.set_status("错误")
-            elif state == "idle":
-                monitor.stop()
+            monitor.set_ai_state(state)
         except Exception:
             pass
 
     def _set_status_text(self, text: str) -> None:
-        """统一更新状态栏文本，并驱动大脑动画状态。"""
+        """更新主状态栏文本。"""
         self.status_label.setText(text)
-
-        monitor = getattr(self, "brain_monitor", None)
-        if monitor is not None:
-            try:
-                monitor.set_status(text)
-            except Exception:
-                pass
 
     def __init__(self, use_physical_adaptation: bool = True, debug_mode: bool = False) -> None:
         """
@@ -198,8 +203,8 @@ class SiliconeCapsuleApp(MenuMixin, AutoTestMixin, AnalysisMixin, QMainWindow):
             2. 如果没有保存状态或状态无效，执行智能适配
             3. 设置窗口大小限制
         """
-        self.setWindowTitle("MCA 智脑系统 - 硅胶拟态核心控制台")
-        self.setStyleSheet(SILICONE_CSS)
+        self.setWindowTitle("MCA 崩溃分析器")
+        self.setStyleSheet(CSS)
         
         self._set_window_icon()
         
@@ -262,29 +267,6 @@ class SiliconeCapsuleApp(MenuMixin, AutoTestMixin, AnalysisMixin, QMainWindow):
                     return
                 except Exception:
                     pass
-        
-        from PyQt6.QtGui import QPixmap, QPainter
-        from PyQt6.QtCore import Qt
-        
-        pixmap = QPixmap(64, 64)
-        pixmap.fill(Qt.GlobalColor.transparent)
-        
-        painter = QPainter(pixmap)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        
-        from PyQt6.QtGui import QColor, QFont, QPen, QBrush
-        
-        painter.setBrush(QBrush(QColor("#3182ce")))
-        painter.setPen(QPen(QColor("#2c5aa0"), 2))
-        painter.drawEllipse(4, 4, 56, 56)
-        
-        painter.setPen(QPen(QColor("#ffffff")))
-        font = QFont("Arial", 24, QFont.Weight.Bold)
-        painter.setFont(font)
-        painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, "M")
-        painter.end()
-        
-        self.setWindowIcon(QIcon(pixmap))
 
     def _apply_smart_adaptation(self, screen) -> None:
         """
@@ -412,16 +394,10 @@ class SiliconeCapsuleApp(MenuMixin, AutoTestMixin, AnalysisMixin, QMainWindow):
         self._graph_placeholder: Optional[QLabel] = None
         self._brain_config_path: Optional[str] = None
         
-        if HAS_BRAIN and HAS_BRAIN_CORE:
-            try:
-                brain_config = os.path.join(ROOT_DIR, "config", "brain_config.json")
-                if not os.path.exists(brain_config):
-                    brain_config = None
-                self._brain_config_path = brain_config
-                if BrainCore is not None:
-                    self.brain = BrainCore(config_path=brain_config)
-            except Exception as e:
-                print(f"Failed to load BrainCore: {e}")
+        brain_config = os.path.join(ROOT_DIR, "config", "brain_config.json")
+        if not os.path.exists(brain_config):
+            brain_config = None
+        self._brain_config_path = brain_config
 
     def _ensure_graph_canvas(self) -> bool:
         """确保图表画布已初始化。"""
@@ -469,19 +445,6 @@ class SiliconeCapsuleApp(MenuMixin, AutoTestMixin, AnalysisMixin, QMainWindow):
             }
             QMenuBar::item:selected {
                 background-color: #e2e8f0;
-            }
-            QMenu {
-                background-color: #ffffff;
-                border: 1px solid #e2e8f0;
-                border-radius: 8px;
-                padding: 5px;
-            }
-            QMenu::item {
-                padding: 5px 20px;
-                border-radius: 4px;
-            }
-            QMenu::item:selected {
-                background-color: #edf2f7;
             }
         """)
 
@@ -570,6 +533,10 @@ class SiliconeCapsuleApp(MenuMixin, AutoTestMixin, AnalysisMixin, QMainWindow):
         action_copy_gl.triggered.connect(self.copy_gl_snippets)
         view_menu.addAction(action_copy_gl)
 
+        action_copy_prompt = QAction("复制诊断提示词 (Tier 3)", self)
+        action_copy_prompt.triggered.connect(self.copy_ai_prompt)
+        view_menu.addAction(action_copy_prompt)
+
         view_menu.addSeparator()
         layout_menu = view_menu.addMenu("依赖图布局")
         self.layout_actions: dict[str, QAction] = {}
@@ -612,7 +579,7 @@ class SiliconeCapsuleApp(MenuMixin, AutoTestMixin, AnalysisMixin, QMainWindow):
         self._set_status_text("状态: 就绪")
         self._set_brain_monitor_state("idle")
         self.btn_analyze.setEnabled(False)
-        self.btn_analyze.setText("开始智能分析")
+        self.btn_analyze.setText("开始分析")
         self.file_path = ""
         self.current_dep_pairs = set()
         self.current_mods = {}
@@ -639,7 +606,8 @@ class SiliconeCapsuleApp(MenuMixin, AutoTestMixin, AnalysisMixin, QMainWindow):
 
     def export_report(self) -> None:
         """导出分析报告。"""
-        if not self.result_text_edit.toPlainText():
+        report_text = self.result_text_edit.toPlainText()
+        if not report_text:
             QMessageBox.warning(self, "无内容", "当前没有分析结果可供导出。")
             return
             
@@ -652,7 +620,7 @@ class SiliconeCapsuleApp(MenuMixin, AutoTestMixin, AnalysisMixin, QMainWindow):
         if file_path:
             try:
                 with open(file_path, "w", encoding="utf-8") as f:
-                    f.write(self.result_text_edit.toPlainText())
+                    f.write(report_text)
                 QMessageBox.information(self, "导出成功", f"报告已成功导出至：\n{file_path}")
             except Exception as e:
                 QMessageBox.critical(self, "导出失败", f"无法写入文件：{str(e)}")
@@ -673,12 +641,7 @@ class SiliconeCapsuleApp(MenuMixin, AutoTestMixin, AnalysisMixin, QMainWindow):
             return
 
         try:
-            with open(file_path, "w", newline="", encoding="utf-8-sig") as f:
-                writer = csv.writer(f)
-                writer.writerow(["Source Mod", "Requires Target", "Status"])
-                for src, tgt in sorted(self.current_dep_pairs):
-                    status = "Present" if tgt in self.current_mods else "Missing"
-                    writer.writerow([src, tgt, status])
+            write_dep_csv(file_path, self.current_dep_pairs, self.current_mods)
             QMessageBox.information(self, "导出成功", f"依赖关系已导出至:\n{file_path}")
         except Exception as e:
             QMessageBox.critical(self, "导出失败", f"无法导出依赖关系: {e}")
@@ -745,12 +708,11 @@ class SiliconeCapsuleApp(MenuMixin, AutoTestMixin, AnalysisMixin, QMainWindow):
         self.log_text_edit.moveCursor(self.log_text_edit.textCursor().MoveOperation.End)
         self.log_text_edit.insertPlainText(line)
         self.log_text_edit.ensureCursorVisible()
-        current = self.log_service.get_text() or ""
-        self.log_service.set_log_text(current + line)
+        self.log_service.append_line(line)
 
     def launch_adversarial_gen(self) -> None:
         """启动场景生成器。"""
-        script_path = os.path.join(ROOT_DIR, "tools", "generate_mc_log.py")
+        script_path = os.path.join(ROOT_DIR, "scripts", "dev", "generate_mc_log.py")
         if not os.path.exists(script_path):
             QMessageBox.warning(self, "启动失败", f"未找到脚本: {script_path}")
             return
@@ -807,15 +769,7 @@ class SiliconeCapsuleApp(MenuMixin, AutoTestMixin, AnalysisMixin, QMainWindow):
         except Exception:
             system_info = {}
 
-        gpu_rules: dict[str, Any] = {}
-        try:
-            if os.path.exists(GPU_ISSUES_FILE):
-                with open(GPU_ISSUES_FILE, "r", encoding="utf-8") as fp:
-                    loaded = json.load(fp)
-                    if isinstance(loaded, dict):
-                        gpu_rules = loaded
-        except Exception:
-            gpu_rules = {}
+        gpu_rules = _get_gpu_rules()
 
         result = analyze_hardware_log(
             text,
@@ -828,87 +782,7 @@ class SiliconeCapsuleApp(MenuMixin, AutoTestMixin, AnalysisMixin, QMainWindow):
         self.hardware_issues = result["suggestions"]
         self.gl_snippets = result["snippets"]
 
-        risk_map = {
-            "HIGH": "高",
-            "MEDIUM": "中",
-            "LOW": "低",
-            "NONE": "无",
-        }
-
-        def _fmt_mem_gb(value: Any) -> str:
-            try:
-                num = int(value)
-                if num <= 0:
-                    return "未知"
-                return f"{num / (1024 ** 3):.1f} GB"
-            except Exception:
-                return "未知"
-
-        report_lines: list[str] = []
-        report_lines.append("硬件分析报告")
-        report_lines.append("=" * 50)
-
-        if system_info:
-            report_lines.append("系统概览:")
-            report_lines.append(f"- 平台: {system_info.get('platform', '未知')}")
-            report_lines.append(f"- Python: {system_info.get('python', '未知')}")
-            report_lines.append(f"- 物理核心: {system_info.get('cpu_count', '未知')}")
-            report_lines.append(f"- 总内存: {_fmt_mem_gb(system_info.get('memory_total'))}")
-
-            gpus = system_info.get("gpus")
-            if isinstance(gpus, list) and gpus:
-                report_lines.append("- GPU:")
-                for gpu in gpus:
-                    if isinstance(gpu, dict):
-                        name = gpu.get("name", "Unknown")
-                        driver = gpu.get("driver", "Unknown")
-                        memory = gpu.get("memoryTotal")
-                        memory_txt = f"{memory} MB" if memory is not None else "未知"
-                        report_lines.append(f"  * {name} | Driver: {driver} | VRAM: {memory_txt}")
-
-        report_lines.append("")
-        report_lines.append("风险评估:")
-        report_lines.append(
-            f"- 级别: {risk_map.get(result['risk_level'], '无')} | 分数: {result['risk_score']}"
-        )
-
-        categories = result.get("categories") or []
-        if categories:
-            report_lines.append(f"- 命中类型: {', '.join(categories)}")
-
-        issues = result.get("issues") or []
-        if issues:
-            report_lines.append("")
-            report_lines.append("诊断命中:")
-            for issue in issues:
-                category = issue.get("category", "未分类")
-                evidence = issue.get("evidence", "")
-                report_lines.append(f"- [{category}] {evidence}")
-
-        render_mods = result.get("render_mods") or []
-        if render_mods:
-            report_lines.append("")
-            report_lines.append("可疑渲染模组:")
-            report_lines.append("- " + ", ".join(render_mods))
-
-        suggestions = result.get("suggestions") or []
-        if suggestions:
-            report_lines.append("")
-            report_lines.append("建议动作:")
-            for tip in suggestions:
-                report_lines.append(f"- {tip}")
-
-        snippets = result.get("snippets") or []
-        if snippets:
-            report_lines.append("")
-            report_lines.append("GL/渲染证据片段:")
-            report_lines.extend(snippets)
-
-        if not issues and not snippets:
-            report_lines.append("")
-            report_lines.append("未发现明显的硬件/渲染异常特征。")
-
-        self.hardware_text_edit.setPlainText("\n".join(report_lines))
+        self.hardware_text_edit.setPlainText(format_hardware_report(result, system_info))
         self.tabs.setCurrentIndex(3)
 
     def copy_gl_snippets(self) -> None:
@@ -922,6 +796,23 @@ class SiliconeCapsuleApp(MenuMixin, AutoTestMixin, AnalysisMixin, QMainWindow):
         cb = QApplication.clipboard()
         cb.setText(text)
         QMessageBox.information(self, "复制成功", "GL 片段已复制到剪贴板。")
+
+    def copy_ai_prompt(self) -> None:
+        """生成并复制 AI 诊断提示词。"""
+        log_content = self.log_text_edit.toPlainText()
+        if not log_content.strip():
+            QMessageBox.warning(self, "无内容", "没有加载日志内容。")
+            return
+            
+        try:
+            from mca_core.prompt_generator import PromptGenerator
+            prompt = PromptGenerator.generate_prompt(log_content)
+            from PyQt6.QtWidgets import QApplication
+            QApplication.clipboard().setText(prompt)
+            QMessageBox.information(self, "复制成功", "已成功生成并复制提示词！现在可粘贴至 ChatGPT/DeepSeek 等外部 AI 获得诊断。")
+        except Exception as e:
+            logger.error(f"Failed to generate prompt: {e}")
+            QMessageBox.warning(self, "生成失败", f"无法生成提示词: {e}")
 
     def start_auto_test(self) -> None:
         """开始自动化测试。"""
@@ -985,37 +876,63 @@ class SiliconeCapsuleApp(MenuMixin, AutoTestMixin, AnalysisMixin, QMainWindow):
     def start_ai_init_if_needed(self) -> None:
         """启动 AI 引擎初始化。"""
         if self.brain is not None:
-            QMessageBox.information(self, "提示", "AI 分析引擎已处于启动状态。")
+            QMessageBox.information(self, "提示", "语义分析模块已启用。")
             return
         if not HAS_BRAIN or not HAS_BRAIN_CORE:
-            QMessageBox.warning(self, "不可用", "当前环境未安装 BrainCore，无法启动 AI 引擎。")
+            QMessageBox.warning(self, "不可用", "当前环境未安装分析模块，无法启用语义分析。")
             return
 
         self.btn_start_ai.setEnabled(False)
         self.btn_start_ai.setText("启动中...")
         self._set_brain_monitor_state("loading")
-        self._set_status_text("状态: 正在启动 AI 分析引擎并预热语义模型...")
+        self._set_status_text("状态: 正在加载语义分析模块...")
 
         worker = AIInitWorker(self._brain_config_path)
         worker.signals.done.connect(self.on_ai_init_done)
+        worker.signals.progress.connect(self._on_ai_init_progress)
         self.ai_init_worker = worker
+
+        self._ai_init_timeout_timer = QTimer(self)
+        self._ai_init_timeout_timer.setSingleShot(True)
+        self._ai_init_timeout_timer.timeout.connect(self._on_ai_init_long_wait)
+        self._ai_init_timeout_timer.start(30000)
+        
         worker.start()
+
+    def _on_ai_init_progress(self, msg: str) -> None:
+        """处理 AI 初始化进度更新。"""
+        self._set_status_text(f"状态: {msg}")
+
+    def _on_ai_init_long_wait(self) -> None:
+        """处理 AI 初始化长时间等待。"""
+        if self.ai_init_worker and self.ai_init_worker.isRunning():
+            self._set_status_text("状态: 仍在下载语义模型 (all-MiniLM-L6-v2, ~90MB) - 请稍候...")
+            self._set_brain_monitor_state("warning")
+            self.btn_start_ai.setText("下载中...")
 
     def on_ai_init_done(self, ok: bool, payload: Any) -> None:
         """处理 AI 引擎初始化完成。"""
+        if hasattr(self, '_ai_init_timeout_timer') and self._ai_init_timeout_timer:
+            self._ai_init_timeout_timer.stop()
+            self._ai_init_timeout_timer = None
+        
         self.btn_start_ai.setEnabled(True)
         if ok:
             self.brain = payload
-            self.btn_start_ai.setText("AI已启动")
+            self.btn_start_ai.setText("已启用")
             self.btn_start_ai.setEnabled(False)
             self._set_brain_monitor_state("active")
-            self._set_status_text("状态: AI 引擎与语义模型已就绪")
-            QMessageBox.information(self, "成功", "AI 分析引擎启动完成，语义模型已预热。")
+            self._set_status_text("状态: 语义分析模块已就绪")
+            QMessageBox.information(self, "成功", "语义分析模块已启用。")
         else:
-            self.btn_start_ai.setText("启动AI")
+            self.btn_start_ai.setText("启用语义分析")
             self._set_brain_monitor_state("error")
-            self._set_status_text("状态: AI 引擎启动失败")
-            QMessageBox.warning(self, "启动失败", f"无法启动 AI 引擎: {payload}")
+            reason = str(payload) if payload else "未知错误"
+            if "超时" in reason:
+                self._set_status_text(f"状态: 语义分析模块初始化超时 ({reason})")
+            else:
+                self._set_status_text(f"状态: 语义分析模块启用失败: {reason}")
+            QMessageBox.warning(self, "启动失败", f"无法启用语义分析模块: {reason}")
 
     def view_history(self) -> None:
         """查看分析历史。"""
@@ -1038,13 +955,11 @@ class SiliconeCapsuleApp(MenuMixin, AutoTestMixin, AnalysisMixin, QMainWindow):
         tree.setColumnWidth(2, 200)
         
         try:
-            with open(history_file, "r", encoding="utf-8-sig") as f:
-                reader = csv.reader(f)
-                rows = list(reader)
-                for row in reversed(rows):
-                    if len(row) >= 3:
-                        item = QTreeWidgetItem(row[:3])
-                        tree.addTopLevelItem(item)
+            rows = read_history_csv(history_file)
+            for row in reversed(rows):
+                if len(row) >= 3:
+                    item = QTreeWidgetItem(row[:3])
+                    tree.addTopLevelItem(item)
         except Exception as e:
             QMessageBox.warning(self, "读取失败", f"无法读取历史记录: {e}")
             return
@@ -1066,11 +981,11 @@ class SiliconeCapsuleApp(MenuMixin, AutoTestMixin, AnalysisMixin, QMainWindow):
         """显示关于对话框。"""
         QMessageBox.about(
             self,
-            "关于 MCA 智脑系统",
-            "<h2>Minecraft 崩溃日志分析系统</h2>"
-            "<p><b>版本:</b> 2.0 (PyQt6 Silicone UI)</p>"
-            "<p>具有智能诊断和图谱分析功能的下一代崩溃分析工具。</p>"
-            "<p>UI 设计: Neumorphic (硅胶/胶囊拟态)</p>"
+            "关于 MCA 崩溃分析器",
+            "<h2>Minecraft 崩溃日志分析器</h2>"
+            "<p><b>版本:</b> 1.5.0 (PyQt6)</p>"
+            "<p>用于分析崩溃日志并提供排查建议。</p>"
+            "<p>界面框架: PyQt6</p>"
         )
 
     def setup_ui(self) -> None:
@@ -1101,7 +1016,7 @@ class SiliconeCapsuleApp(MenuMixin, AutoTestMixin, AnalysisMixin, QMainWindow):
         self.btn_load = QPushButton("加载日志")
         self.btn_load.clicked.connect(self.on_load_clicked)
         
-        self.btn_analyze = QPushButton("开始智能分析")
+        self.btn_analyze = QPushButton("开始分析")
         self.btn_analyze.setObjectName("accentButton")
         self.btn_analyze.clicked.connect(self.on_analyze_clicked)
         self.btn_analyze.setEnabled(False)
@@ -1109,7 +1024,7 @@ class SiliconeCapsuleApp(MenuMixin, AutoTestMixin, AnalysisMixin, QMainWindow):
         self.btn_settings = QPushButton("系统设置")
         self.btn_settings.clicked.connect(self.on_settings_clicked)
 
-        self.btn_start_ai = QPushButton("启动AI")
+        self.btn_start_ai = QPushButton("启用语义分析")
         self.btn_start_ai.clicked.connect(self.start_ai_init_if_needed)
         
         exact_version = platform.python_version()
@@ -1154,15 +1069,9 @@ class SiliconeCapsuleApp(MenuMixin, AutoTestMixin, AnalysisMixin, QMainWindow):
         """设置日志卡片。"""
         self.log_card = QFrame()
         self.log_card.setObjectName("siliconeCard")
-        shadow1 = QGraphicsDropShadowEffect()
-        shadow1.setBlurRadius(20)
-        shadow1.setXOffset(5)
-        shadow1.setYOffset(5)
-        shadow1.setColor(QColor(163, 177, 198, 120))
-        self.log_card.setGraphicsEffect(shadow1)
         self.log_layout = QVBoxLayout(self.log_card)
         
-        log_title = QLabel("📄 崩溃日志原文")
+        log_title = QLabel("崩溃日志原文")
         log_title.setStyleSheet("font-weight: bold; font-size: 14px;")
         self.log_text_edit = QTextEdit()
         self.log_text_edit.setReadOnly(True)
@@ -1176,12 +1085,6 @@ class SiliconeCapsuleApp(MenuMixin, AutoTestMixin, AnalysisMixin, QMainWindow):
         """设置右侧卡片。"""
         self.right_card = QFrame()
         self.right_card.setObjectName("siliconeCard")
-        shadow2 = QGraphicsDropShadowEffect()
-        shadow2.setBlurRadius(20)
-        shadow2.setXOffset(5)
-        shadow2.setYOffset(5)
-        shadow2.setColor(QColor(163, 177, 198, 120))
-        self.right_card.setGraphicsEffect(shadow2)
         self.right_layout = QVBoxLayout(self.right_card)
         
         self._setup_tabs()
@@ -1267,18 +1170,24 @@ class SiliconeCapsuleApp(MenuMixin, AutoTestMixin, AnalysisMixin, QMainWindow):
 
         self.auto_test_scenarios = QListWidget()
         self.auto_test_scenarios.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
-        scenario_map = SCENARIOS if SCENARIOS else {
-            "normal": "正常日志",
-            "version_conflict": "版本冲突",
-            "missing_dependency": "缺失前置",
-            "mixin_conflict": "Mixin 注入失败",
-            "ticking_entity": "实体更新错误",
-            "out_of_memory": "内存溢出",
-            "bad_video_driver": "显卡驱动不兼容",
-        }
-        for key, desc in scenario_map.items():
+        try:
+            from scripts.dev.generate_mc_log import SCENARIOS
+        except ImportError:
+            SCENARIOS = {
+                "normal": "正常日志",
+                "oom": "内存溢出",
+                "missing_dependency": "缺失前置",
+                "gl_error": "OpenGL 错误",
+                "mixin_conflict": "Mixin 冲突",
+                "version_conflict": "版本冲突",
+                "compound": "复合错误",
+                "adversarial": "对抗样本",
+            }
+        for key, cfg in SCENARIOS.items():
+            desc = cfg.get("description", key) if isinstance(cfg, dict) else str(cfg)
             self.auto_test_scenarios.addItem(f"{key} - {desc}")
-        for i in range(self.auto_test_scenarios.count()):
+        self.auto_test_scenarios.addItem("custom - 自定义日志 (粘贴到下框)")
+        for i in range(self.auto_test_scenarios.count() - 1):
             self.auto_test_scenarios.item(i).setSelected(True)
         self.tab_auto_test_layout.addWidget(QLabel("测试场景 (可多选):"))
         self.tab_auto_test_layout.addWidget(self.auto_test_scenarios)
@@ -1307,11 +1216,11 @@ class SiliconeCapsuleApp(MenuMixin, AutoTestMixin, AnalysisMixin, QMainWindow):
         self.auto_test_log_edit.setStyleSheet("font-family: Consolas, monospace; font-size: 12px; border: none; background: transparent;")
         self.tab_auto_test_layout.addWidget(self.auto_test_log_edit)
         
-        self.tabs.addTab(self.tab_results, "🧠 诊断报告")
-        self.tabs.addTab(self.tab_mods, "📦 环境与模组")
-        self.tabs.addTab(self.tab_graphs, "📊 依赖图表")
-        self.tabs.addTab(self.tab_hardware, "🖥️ 硬件分析")
-        self.tabs.addTab(self.tab_auto_test, "🧪 自动化测试")
+        self.tabs.addTab(self.tab_results, "诊断报告")
+        self.tabs.addTab(self.tab_mods, "环境与模组")
+        self.tabs.addTab(self.tab_graphs, "依赖图表")
+        self.tabs.addTab(self.tab_hardware, "硬件分析")
+        self.tabs.addTab(self.tab_auto_test, "自动化测试")
 
     def on_settings_clicked(self) -> None:
         """处理设置按钮点击。"""
@@ -1378,8 +1287,8 @@ class SiliconeCapsuleApp(MenuMixin, AutoTestMixin, AnalysisMixin, QMainWindow):
             file_path: 日志文件路径
         """
         try:
-            with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
-                content = f.read()
+            from mca_core.file_io import read_text_limited
+            content = read_text_limited(file_path)
             
             self.log_service.set_log_text(content)
             self.file_path = file_path
@@ -1391,39 +1300,44 @@ class SiliconeCapsuleApp(MenuMixin, AutoTestMixin, AnalysisMixin, QMainWindow):
             if self.graph_canvas is not None:
                 self.graph_canvas.figure.clear()
                 self.graph_canvas.draw()
+        except ValueError as e:
+            QMessageBox.critical(self, "文件过大", f"无法加载文件: {e}")
         except Exception as e:
             QMessageBox.critical(self, "加载错误", f"无法加载文件: {e}")
 
     def import_mods(self) -> None:
-        """导入模组列表。"""
+        """导入模组列表（后台线程执行文件扫描）。"""
         folder = QFileDialog.getExistingDirectory(self, "选择 .minecraft/mods 文件夹")
         if not folder:
             return
 
-        mods: dict[str, set] = defaultdict(set)
-        pattern = re.compile(r"([a-zA-Z0-9_\-]+)-(\d[\w\.\-]+)\.jar")
+        self.btn_load.setEnabled(False)
+        self._set_status_text("状态: 正在扫描模组目录...")
 
-        try:
-            for root, _, files in os.walk(folder):
-                for name in files:
-                    if not name.lower().endswith(".jar"):
-                        continue
-                    m = pattern.search(name)
-                    if not m:
-                        continue
-                    mods[m.group(1)].add(m.group(2))
-
-            self.current_mods = dict(mods)
-            self.mod_list_widget.clear()
-            self.mod_list_widget.addItem(f"从目录导入 {len(mods)} 个模组:")
-            for modid, versions in sorted(mods.items()):
-                self.mod_list_widget.addItem(f"📦 {modid} (版本: {', '.join(sorted(versions))})")
-
-            self.tabs.setCurrentIndex(1)
-            self._set_status_text(f"状态: 已导入 {len(mods)} 个模组")
-            QMessageBox.information(self, "导入完成", f"在文件夹中发现 {len(mods)} 个模组。")
-        except Exception as e:
-            QMessageBox.critical(self, "导入失败", f"扫描失败: {e}")
+        def _scan_worker() -> None:
+            try:
+                mods = scan_mods_directory(folder)
+                
+                def _on_done() -> None:
+                    self.current_mods = dict(mods)
+                    self.mod_list_widget.clear()
+                    self.mod_list_widget.addItem(f"从目录导入 {len(mods)} 个模组:")
+                    for modid, versions in sorted(mods.items()):
+                        self.mod_list_widget.addItem(f"📦 {modid} (版本: {', '.join(sorted(versions))})")
+                    self.tabs.setCurrentIndex(1)
+                    self._set_status_text(f"状态: 已导入 {len(mods)} 个模组")
+                    self.btn_load.setEnabled(True)
+                    QMessageBox.information(self, "导入完成", f"在文件夹中发现 {len(mods)} 个模组。")
+                
+                QTimer.singleShot(0, _on_done)
+            except Exception as e:
+                def _on_error() -> None:
+                    self.btn_load.setEnabled(True)
+                    self._set_status_text("状态: 就绪")
+                    QMessageBox.critical(self, "导入失败", f"扫描失败: {e}")
+                QTimer.singleShot(0, _on_error)
+        
+        threading.Thread(target=_scan_worker, daemon=True).start()
 
     def on_analyze_clicked(self) -> None:
         """处理分析按钮点击。"""
@@ -1439,7 +1353,7 @@ class SiliconeCapsuleApp(MenuMixin, AutoTestMixin, AnalysisMixin, QMainWindow):
             self.graph_canvas.figure.clear()
             self.graph_canvas.draw()
         
-        self.result_text_edit.append("开始执行深度诊断流程...\n" + "="*40)
+        self.result_text_edit.append("开始执行日志分析...\n" + "="*40)
         self.progress.show()
         self.progress.setValue(0)
         self._set_brain_monitor_state("loading")
@@ -1480,7 +1394,7 @@ class SiliconeCapsuleApp(MenuMixin, AutoTestMixin, AnalysisMixin, QMainWindow):
         self.mod_list_widget.addItem(f"检测到 {len(mods)} 个独立模组:")
         for modid, vers in sorted(mods.items()):
             v_str = ", ".join(vers)
-            self.mod_list_widget.addItem(f"📦 {modid} (版本: {v_str})")
+            self.mod_list_widget.addItem(f"{modid} (版本: {v_str})")
             
         self.draw_graphs(dep_pairs, cause_counts)
         self.refresh_hardware_analysis()
@@ -1517,27 +1431,11 @@ class SiliconeCapsuleApp(MenuMixin, AutoTestMixin, AnalysisMixin, QMainWindow):
             
         ax2.set_title("核心依赖关系网络", fontdict={'family': 'SimHei' if sys.platform == 'win32' else 'sans-serif'})
         if dep_pairs:
-            G = nx.DiGraph()
-            for src, dst in dep_pairs:
-                G.add_edge(src, dst)
-            if self.filter_isolated_nodes:
-                try:
-                    isolates = list(nx.isolates(G))
-                    G.remove_nodes_from(isolates)
-                except Exception:
-                    pass
-            pos = nx.spring_layout(G, seed=42)
-            if self.graph_layout_name == "circular":
-                pos = nx.circular_layout(G)
-            elif self.graph_layout_name == "shell":
-                pos = nx.shell_layout(G)
-            elif self.graph_layout_name == "spectral":
-                pos = nx.spectral_layout(G)
-            elif self.graph_layout_name == "random":
-                pos = nx.random_layout(G)
-            nx.draw(G, pos, ax=ax2, with_labels=True, node_color='#d1d9e6', 
-                    node_size=800, font_size=8, font_weight='bold', edge_color='#a0aec0',
-                    arrowsize=10, font_family='Consolas')
+            G, pos = build_nx_graph(dep_pairs, self.graph_layout_name, self.filter_isolated_nodes)
+            if G is not None and pos is not None:
+                nx.draw(G, pos, ax=ax2, with_labels=True, node_color='#d1d9e6', 
+                        node_size=800, font_size=8, font_weight='bold', edge_color='#a0aec0',
+                        arrowsize=10, font_family='Consolas')
         else:
             ax2.text(0.5, 0.5, "未检测到明确的依赖问题", ha='center', va='center', color='#718096')
             ax2.axis('off')

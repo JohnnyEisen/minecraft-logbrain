@@ -160,6 +160,7 @@ def _load_patches_safely(patch_dir: str):
     
     loaded_count = 0
     rejected_count = 0
+    path_inserted = False
     
     for filename in os.listdir(patch_dir):
         if not filename.endswith('.py'):
@@ -178,7 +179,9 @@ def _load_patches_safely(patch_dir: str):
                 continue
                 
             try:
-                sys.path.insert(0, patch_dir)
+                if not path_inserted:
+                    sys.path.insert(0, patch_dir)
+                    path_inserted = True
                 print(f"[Hotfix] 已安全加载补丁: {filename}")
                 loaded_count += 1
             except Exception as e:
@@ -303,40 +306,24 @@ else:
 
 
 def main():
+    from config.constants import ensure_app_dirs
+    ensure_app_dirs()
+    
     # Start PyQt6 Silicone & Capsule UI
     try:
-        import sys
         import PyQt6
-        from PyQt6.QtWidgets import QApplication
-        from mca_core.main_window_pyqt import SiliconeCapsuleApp
-        print("[Launcher] Starting new Silicone & Capsule UI (PyQt6)...")
-        print("[Launcher] High DPI support enabled")
-        app = QApplication(sys.argv)
-        window = SiliconeCapsuleApp()
-        window.show()
-        sys.exit(app.exec())
-        return
     except ImportError:
-        print("[Launcher] PyQt6 not installed or failed to load. Falling back to Tkinter...")
+        print("[FATAL] PyQt6 is required but not installed.  Run: pip install PyQt6", file=sys.stderr)
+        sys.exit(1)
 
-    try:
-        # Enable DPI awareness for Tk path only.
-        try:
-            from mca_core.ui.dpi_awareness import enable_dpi_awareness
-            enable_dpi_awareness()
-        except Exception:
-            pass
-
-        # Primary entry point
-        from mca_core.launcher import launch_app
-        launch_app()
-    except ImportError:
-        # Fallback for legacy layout
-        import tkinter as tk
-        from mca_core.app import MinecraftCrashAnalyzer
-        root = tk.Tk()
-        app = MinecraftCrashAnalyzer(root)
-        root.mainloop()
+    from PyQt6.QtWidgets import QApplication
+    from mca_core.main_window_pyqt import SiliconeCapsuleApp
+    print("[Launcher] Starting Silicone & Capsule UI (PyQt6)...")
+    print("[Launcher] High DPI support enabled")
+    app = QApplication(sys.argv)
+    window = SiliconeCapsuleApp()
+    window.show()
+    sys.exit(app.exec())
 
 
 if __name__ == "__main__":

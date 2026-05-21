@@ -109,11 +109,9 @@ class InitializationMixin:
             
         logger.info("Starting background engine initialization...")
         
-        if hasattr(self, 'ai_status_var') and self.ai_status_var:
-            self.root.after(0, lambda: self.ai_status_var.set("Analysis: Loading..."))
         if hasattr(self, 'brain_monitor') and self.brain_monitor:
-            self.root.after(0, lambda: self.brain_monitor.animate_loading())
-        
+            self.brain_monitor.set_ai_state("loading")
+
         self._load_hardware_accelerator_dlc()
         self._load_codebert_dlc()
         self._load_neural_network_dlc()
@@ -148,15 +146,12 @@ class InitializationMixin:
                     units["calculate_similarity"]
                 )
                 logger.info("分析模式切换: 深度语义理解 (CodeBERT)")
-                if hasattr(self, 'ai_status_var') and self.ai_status_var:
-                    self.root.after(
-                        0, 
-                        lambda: self.brain_monitor.set_status("Analysis: 语义模型已就绪") if hasattr(self, 'brain_monitor') and self.brain_monitor else None
-                    )
+                if hasattr(self, 'brain_monitor') and self.brain_monitor:
+                    self.brain_monitor.set_ai_state("active")
         except ImportError as e:
             logger.warning(f"无法启用 CodeBERT (ImportError): {e}")
-            if hasattr(self, 'ai_status_var') and self.ai_status_var:
-                self.root.after(0, lambda: self.brain_monitor.set_status("Analysis: 仅规则模式") if hasattr(self, 'brain_monitor') and self.brain_monitor else None)
+            if hasattr(self, 'brain_monitor') and self.brain_monitor:
+                self.brain_monitor.set_ai_state("warning")
         except Exception as dlc_error:
             logger.warning(f"ML 引擎加载跳过: {dlc_error}")
 
@@ -230,11 +225,8 @@ class InitializationMixin:
         else:
             self._ai_init_started = True
         
-        if hasattr(self, 'ai_status_var') and self.ai_status_var:
-            try:
-                self.ai_status_var.set("Analysis: 初始化中...")
-            except Exception:
-                pass
+        if hasattr(self, 'brain_monitor') and self.brain_monitor:
+            self.brain_monitor.set_ai_state("loading")
         
         submit_task(self._load_dlcs_async)
 

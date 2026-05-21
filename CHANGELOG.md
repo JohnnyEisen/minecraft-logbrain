@@ -4,7 +4,77 @@
 - 当前发布版本请看本文件顶部第一条版本记录。
 - 本文件是唯一的发布历史来源，其他文档中的版本号可能是历史阶段或模板占位。
 
+## v1.5.2 - 启动加速、UI 工程化与 AI 稳定性 (2026-05-17)
+
+### 版本概览
+- 这一版解决三个高频痛点：启动慢、AI 状态不可见、自动测试结果没区分度。同时完成 UI 工程化回炉和底层设备检测一致性修复。
+
+### Changed — 启动加速
+- **BrainCore 延迟初始化**：不再在窗口构造时创建 BrainCore，改为用户点击"启用语义分析"时才在线程中初始化。节省冷启动 2-30s。
+- **brain_system 惰性导入**：`brain_system/__init__.py` 用 `__getattr__` 替代全面 eager import，消除整个 core.py 导入级联。
+- **crash_log_lower 共享**：AnalysisContext 构造时计算一次 `.lower()`，6 个 detector 共享引用，减少字符串分配。
+
+### Added — AI 状态可视化
+- **BrainMonitorWidget AI 状态标签**：PyQt6 大脑指示器新增 `_ai_status_label`，5 色状态对照（未启用/加载中/已就绪/失败/下载中），颜色与圆点指示器同步。
+- **AI 初始化超时与进度反馈**：`AIInitWorker` 新增 120s 超时机制 + 分阶段进度报告（BrainCore 创建 → 硬件加速器 → 语义模型下载 → 模型验证）。30s 后触发橙色警告提示"仍在下载语义模型 (~90MB)"。
+
+### Fixed — 设备检测一致性
+- **mHC 配置跟随错误设备**：`_setup_mhc()` 原先独立查询 Hardware DLC（依赖 cupy），在无 cupy 但 PyTorch CUDA 可用的环境下误走"CPU 极简模式"。修复为使用 `self.device.type`（已在 `_initialize` 中正确确定的实际运行设备）。
+- **HardwareAccelerator GPU 检测回退**：`_detect_hardware()` 原来只依赖 cupy。新增 PyTorch fallback：`torch.cuda.is_available()` → `torch.cuda.get_device_properties()`。用户只装 PyTorch 不装 cupy 时也能正确报告 GPU。
+
+### Changed — 自动测试结果区分
+- **检出摘要细化**：输出从笼统的"检出(N项)"改为"规则: type1, type2 | 检测: DetectorA, DetectorB"，区分 DiagnosticEngine 模式匹配与 DetectorRegistry 检测器命中。
+- **按场景统计增强**：最终统计不仅显示检出率，还列出每个场景命中的具体规则类型和检测器类型。
+
+### Changed — UI 工程化
+- **扁平专业重设计**：`styles_pyqt.py` 600+ 行玻璃拟态 CSS → 简洁扁平配色方案。去掉 9 处 Emoji、2 处 drop shadow、复杂的解剖学大脑绘图。
+- **BrainMonitorWidget 布局修复**：AI 状态标签改为短固定文案（"AI: 加载中..."），长文本仅留在主状态栏，解决工具栏信息溢出问题。
+
+### Added — 测试覆盖
+- **`test_module_imports.py`**：全量模块导入扫描测试，防止导入级破坏。
+- **`test_diagnostic_engine.py`**：11 项诊断引擎专项测试，覆盖所有规则匹配和边界条件。
+
+### Notes
+- HardwareAccelerator 的 `_init_devices_real` 仍需要 cupy 创建 CUDADevice 对象。如果 GPU 仅通过 PyTorch 检测到（无 cupy），device_objects 中不会有 GPU 条目。已装 cupy 则完全正常。
+- launcher.py 引用已废弃的 Tkinter 入口，建议作为技术债清理。
+
+## v1.5.1 - 检测器精度跃升与执行器路由收敛 (2026-05-15)
+
+### 版本概览
+- 这一版聚焦两件事：把 AI 检测精度推到能交付的水平，把 CPU 并行调度的路由逻辑理顺。
+
+### Changed — 检测器精度 (F1: 71.8% → 98.4%)
+- **DuplicateModsDetector**：修复 `analyzer.mods` 缺失导致检测器静默崩溃、文本模式漏检的问题。新增文本重复模式匹配（`found duplicate mod` / `duplicate mods found` / `multiple files for mod`）。
+- **VersionConflictsDetector**：新增 `requires version.*but found version` 匹配模式，覆盖 mod 版本不满足场景。
+- **GlErrorsDetector**：新增 `supported/required opengl version` 模式，覆盖 OpenGL 版本过低场景。
+- **DependencyDetector**：修复正则跳过 `required/mandatory/dependency:` 填充词，避免误捕获 "version"/"required" 为 mod 名；增加 `INVALID_NAMES` 过滤噪声词。
+- **整体效果**：0 漏检、0 误报、30/39 完全正确、F1 从 71.8% 升至 **98.4%**。
+
+### Changed — 执行器路由收敛
+- **`_select_executor_kind`**：新增 `"legacy"` 策略（始终线程池）；`"balanced"` 策略改为始终线程池（安全默认，避免小任务 IPC 开销）；仅 `"throughput"` 将 CPU 任务路由至进程池。
+- **效果**：async compute 并行加速比：0.43x → **10.68x**。
+
+### Changed — 性能：crash_log.lower() 去重
+- **AnalysisContext** 新增 `crash_log_lower` 字段，构造时计算一次，6 个 detector 统一引用共享副本。消除大日志场景下 6→1 倍字符串分配。
+
+### Fixed — 代码清理
+- 删除未使用的 `_WORK_NS_PER_ITER` 常量及 `_estimate_task_work_ms` 方法。
+- 修复 `test_ai_performance.py` 中 `shutdown()` 协程未 await 导致的 RuntimeWarning。
+- `core.py` 局部 `import re` 提升到文件顶部。
+- `version_conflicts.py` 删除两对子集冗余正则模式，消除重复冲突条目输出。
+
+### Fixed — 测试改进
+- COMP_003 预期标签补全 `"其他"`（`Critical injection failure` 触发 Mixin 检测器）。
+- `test_numeric_only_modid_skipped` 补全断言（此前零断言，永远通过）。
+- `TestResult` dataclass 添加 `__test__ = False` 消除 pytest 收集警告。
+
+### Notes
+- 本次改动集中在检测器和执行器层，UI 和 DLC 未变更。升级后建议跑一次 `test_ai_accuracy_full.py` 做基线复核。
+- 进程池在 Windows `spawn` 下对小任务（<30ms）有 IPC 开销，仅建议在 `throughput` 模式 + 重计算场景下使用。
+
 ## v1.5.0 - 启动可信化与渲染诊断增强 (2026-04-25)
+
+详细发布说明：见 [docs/RELEASE_NOTES_v1.5.0.md](docs/RELEASE_NOTES_v1.5.0.md)。
 
 ### 版本概览
 - 这一版不是单点补丁，而是同时收敛三条主线：模型启动可信度、界面状态可观测性、渲染崩溃归因精度。
