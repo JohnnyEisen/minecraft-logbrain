@@ -371,7 +371,7 @@ class MainNotebook:
                 elif hasattr(self.browser, 'load_url'):
                     self.browser.load_url("https://www.bing.com/search?q=minecraft+crash+solutions")
             except Exception as e:
-                print(f"[MainNotebook] Failed to load website: {e}")
+                logger.warning(f"[MainNotebook] Failed to load website: {e}")
         else:
             try:
                 # tkinterweb uses different method names depending on version
@@ -383,6 +383,6 @@ class MainNotebook:
                 elif hasattr(self.browser, 'set_html'):
                     self.browser.set_html(html)
             except Exception as e:
-                print(f"[MainNotebook] Failed to set browser content: {e}")
+                logger.warning(f"[MainNotebook] Failed to set browser content: {e}")
         
         self.browser.pack(fill="both", expand=True, padx=6, pady=(6,8))

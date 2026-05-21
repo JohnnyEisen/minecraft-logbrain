@@ -16,15 +16,15 @@ class Toolbar:
 
     def _create_widgets(self):
         # 1. Open Log
-        open_btn = ttk.Button(self.parent, text="📂 打开日志", command=self.app.load_file, width=15)
+        open_btn = ttk.Button(self.parent, text="打开日志", command=self.app.load_file, width=15)
         open_btn.pack(side="left", padx=5)
 
         # 2. Start Analysis (Primary)
-        analyze_btn = ttk.Button(self.parent, text="▶ 开始分析", command=self.app.start_analysis, width=15)
+        analyze_btn = ttk.Button(self.parent, text="开始分析", command=self.app.start_analysis, width=15)
         analyze_btn.pack(side="left", padx=5)
 
         # 3. Clear text
-        clear_btn = ttk.Button(self.parent, text="🗑️ 清除", command=self.app.clear_content, width=10)
+        clear_btn = ttk.Button(self.parent, text="清除", command=self.app.clear_content, width=10)
         clear_btn.pack(side="left", padx=5)
 
         # Separator (Vertical)

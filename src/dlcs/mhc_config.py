@@ -8,10 +8,13 @@ mHC 训练配置文件
 from __future__ import annotations
 
 import json
+import logging
 import argparse
 from dataclasses import dataclass, asdict, field
 from typing import Optional, List
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -284,11 +287,11 @@ if __name__ == "__main__":
     import sys
 
     if len(sys.argv) > 1 and sys.argv[1] == "--list-presets":
-        print("可用预设配置:")
+        logger.info("可用预设配置:")
         for name in PRESET_CONFIGS:
-            print(f"  - {name}")
+            logger.info(f"  - {name}")
         sys.exit(0)
 
     config = parse_args()
-    print("训练配置:")
+    logger.info("训练配置:")
     print(json.dumps(config.to_dict(), indent=2, ensure_ascii=False))

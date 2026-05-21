@@ -6,6 +6,7 @@ MCA Brain System - 窗口工具函数
 
 from __future__ import annotations
 
+import logging
 import math
 from typing import Optional, Tuple
 
@@ -14,6 +15,8 @@ from PyQt6.QtGui import QScreen
 from PyQt6.QtWidgets import QApplication
 
 from mca_core.window_constants import WindowConstants
+
+logger = logging.getLogger(__name__)
 
 
 def calculate_window_size(screen: QScreen) -> Tuple[int, int]:
@@ -67,7 +70,7 @@ def calculate_top_margin(screen: QScreen, debug: bool = False) -> int:
     if screen_diagonal_mm and screen_diagonal_mm > 0:
         screen_diagonal_inch = screen_diagonal_mm / 25.4
         if debug:
-            print(f"[WindowUtils] 屏幕物理尺寸: {screen_diagonal_inch:.1f} 英寸")
+            logger.debug(f"[WindowUtils] 屏幕物理尺寸: {screen_diagonal_inch:.1f} 英寸")
         
         if screen_diagonal_inch <= WindowConstants.SCREEN_SMALL_INCH:
             top_margin = WindowConstants.MARGIN_SMALL_SCREEN
@@ -87,10 +90,10 @@ def calculate_top_margin(screen: QScreen, debug: bool = False) -> int:
         top_margin = int(screen_height * WindowConstants.MARGIN_FALLBACK_RATIO)
         top_margin = max(15, min(40, top_margin))
         if debug:
-            print(f"[WindowUtils] 无法获取物理尺寸，使用比例法: {top_margin}px")
+            logger.debug(f"[WindowUtils] 无法获取物理尺寸，使用比例法: {top_margin}px")
     
     if debug:
-        print(f"[WindowUtils] 顶部边距: {top_margin}px")
+        logger.debug(f"[WindowUtils] 顶部边距: {top_margin}px")
     return top_margin
 
 
@@ -125,7 +128,7 @@ def calculate_window_position(
     y = screen_y + top_margin
     
     if debug:
-        print(f"[WindowUtils] 窗口位置: ({x}, {y})")
+        logger.debug(f"[WindowUtils] 窗口位置: ({x}, {y})")
     return x, y
 
 
@@ -149,7 +152,7 @@ def calculate_physical_adaptation(
     screen_diagonal_mm = _get_screen_diagonal_mm(screen)
     if not screen_diagonal_mm or screen_diagonal_mm <= 0:
         if debug:
-            print("[WindowUtils] 无法获取屏幕物理尺寸，物理适配不可用")
+            logger.debug("[WindowUtils] 无法获取屏幕物理尺寸，物理适配不可用")
         return None
     
     screen_geometry = screen.availableGeometry()
@@ -161,7 +164,7 @@ def calculate_physical_adaptation(
     
     ppi = screen_diagonal_px / screen_diagonal_inch
     if debug:
-        print(f"[WindowUtils] 屏幕 PPI: {ppi:.1f}")
+        logger.debug(f"[WindowUtils] 屏幕 PPI: {ppi:.1f}")
     
     base_ppi = 157.4
     base_top_margin_mm = 3.2
@@ -177,7 +180,7 @@ def calculate_physical_adaptation(
     top_margin_px = max(15, min(50, top_margin_px))
     
     if debug:
-        print(f"[WindowUtils] 物理适配: {width_px}x{height_px}, 顶部边距 {top_margin_px}px")
+        logger.debug(f"[WindowUtils] 物理适配: {width_px}x{height_px}, 顶部边距 {top_margin_px}px")
     return width_px, height_px, top_margin_px
 
 

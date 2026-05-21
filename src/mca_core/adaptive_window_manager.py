@@ -6,6 +6,7 @@ MCA Brain System - 自适应窗口管理器
 
 from __future__ import annotations
 
+import logging
 import math
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -24,6 +25,8 @@ from mca_core.window_utils import (
     get_window_screen,
     is_window_visible_on_screen,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class AdaptiveWindowSignals(QObject):
@@ -486,7 +489,7 @@ class AdaptiveWindowManager(QObject):
     def _log_debug(self, message: str) -> None:
         """输出调试信息"""
         formatted = f"[AdaptiveWindow] {message}"
-        print(formatted)
+        logger.debug(formatted)
         self._signals.debug_info.emit(formatted)
 
     def set_debug_mode(self, enabled: bool) -> None:
@@ -528,7 +531,7 @@ def print_screen_info() -> None:
     """打印所有屏幕信息（调试用）"""
     qapp = QGuiApplication.instance()
     if not qapp:
-        print("错误: 没有QApplication实例")
+        logger.error("没有QApplication实例")
         return
 
     screens = qapp.screens()  # type: ignore[union-attr]

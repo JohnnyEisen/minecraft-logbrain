@@ -317,7 +317,7 @@ class UIMixin:
             messagebox.showerror("启动失败", str(e))
 
     def open_help(self: UIMixinHost):
-        messagebox.showinfo("关于", "Minecraft Crash Analyzer (v1.0 - Brain System)\n\nPowered by BrainCore Architecture.")
+        messagebox.showinfo("关于", "Minecraft Crash Analyzer\n\n用于崩溃日志分析与排查。")
 
     def on_window_close(self: UIMixinHost):
         try:
@@ -327,7 +327,7 @@ class UIMixin:
         def _cleanup_task():
             try:
                 if self.brain:
-                    logger.info("正在关闭 Brain System 资源...")
+                    logger.info("正在关闭分析模块资源...")
                     for dlc in self.brain.dlcs.values():
                         if hasattr(dlc, "shutdown"):
                             try:

@@ -1,7 +1,6 @@
 """图表 Mixin - 依赖图/饼图绘制"""
 
 from __future__ import annotations
-import copy
 import threading
 import logging
 from typing import TYPE_CHECKING, Any
@@ -82,7 +81,7 @@ class GraphMixin:
         if self.mods and not self.dependency_pairs:
             filter_iso = False
         mods_keys = list(self.mods.keys())
-        dep_pairs = copy.copy(self.dependency_pairs)
+        dep_pairs = self.dependency_pairs  # set 读操作线程安全，直接传递引用
         submit_task(self._async_layout_worker, mods_keys, dep_pairs, layout_name, filter_iso)
 
     def _async_layout_worker(self, mods_keys, dep_pairs, layout_name, filter_iso):

@@ -6,11 +6,14 @@ MCA Brain System - PyQt6 屏幕适配模块
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Optional
 
 from PyQt6.QtCore import QRect, QSettings, QSize
 from PyQt6.QtGui import QScreen
 from PyQt6.QtWidgets import QApplication, QMainWindow
+
+logger = logging.getLogger(__name__)
 
 
 class ScreenAdapter:
@@ -58,7 +61,7 @@ class ScreenAdapter:
     def _log(cls, message: str) -> None:
         """输出调试日志。"""
         if cls._debug_mode:
-            print(f"[ScreenAdapter] {message}")
+            logger.debug(f"[ScreenAdapter] {message}")
     
     @classmethod
     def calculate_window_size(cls, screen: QScreen) -> tuple[int, int]:

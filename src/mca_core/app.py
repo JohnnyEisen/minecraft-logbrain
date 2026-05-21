@@ -60,6 +60,11 @@ from mca_core.app_initialization_mixin import InitializationMixin
 from mca_core.app_ui_mixin import UIMixin
 from mca_core.detectors import DetectorRegistry
 from mca_core.di import DIContainer
+from mca_core.init_phase_manager import (
+    InitializationPhase,
+    InitializationPhaseManager,
+    InitializationStep,
+)
 from mca_core.module_loader import ModuleLoader
 from mca_core.plugins import PluginRegistry
 from mca_core.python_runtime_optimizer import apply_version_specific_optimizations
@@ -156,20 +161,102 @@ class MinecraftCrashAnalyzer(
         """
         初始化崩溃分析器。
         
+        使用 InitializationPhaseManager 管理初始化流程，
+        确保步骤间依赖关系显式声明、执行顺序自动计算和验证。
+        
         Args:
             root: Tkinter 根窗口实例
         """
         apply_version_specific_optimizations()
-        self._init_root_window(root)
-        self._init_threading()
-        self._init_services()
-        self._init_cache()
-        self._init_state()
-        self._init_di_container()
-        self._init_plugins()
-        self._init_detectors()
-        self._init_brain()
-        self._setup_detectors()
+        self._init_manager = InitializationPhaseManager()
+        self._register_initialization_steps(root)
+        self._init_manager.execute()
+
+    def _register_initialization_steps(self, root: tk.Tk) -> None:
+        """注册所有初始化步骤到阶段管理器。
+
+        按 5 个阶段组织初始化流程:
+          1. INFRASTRUCTURE  - 基础设施（窗口、线程）
+          2. CORE_SERVICES   - 核心服务（日志、配置、状态、缓存）
+          3. DEPENDENCY_INJECTION - 依赖注入容器
+          4. EXTENSIONS      - 扩展组件（插件、检测器、AI）
+          5. FINALIZATION    - 完成设置
+
+        Args:
+            root: Tkinter 根窗口实例
+        """
+        self._init_manager.register_steps([
+            InitializationStep(
+                name="init_root_window",
+                phase=InitializationPhase.INFRASTRUCTURE,
+                handler=lambda: self._init_root_window(root),
+                dependencies=[],
+                description="初始化根窗口配置",
+            ),
+            InitializationStep(
+                name="init_threading",
+                phase=InitializationPhase.INFRASTRUCTURE,
+                handler=self._init_threading,
+                dependencies=[],
+                description="初始化线程相关组件",
+            ),
+            InitializationStep(
+                name="init_services",
+                phase=InitializationPhase.CORE_SERVICES,
+                handler=self._init_services,
+                dependencies=["init_threading"],
+                description="初始化服务层组件",
+            ),
+            InitializationStep(
+                name="init_cache",
+                phase=InitializationPhase.CORE_SERVICES,
+                handler=self._init_cache,
+                dependencies=[],
+                description="初始化缓存系统",
+            ),
+            InitializationStep(
+                name="init_state",
+                phase=InitializationPhase.CORE_SERVICES,
+                handler=self._init_state,
+                dependencies=[],
+                description="初始化应用状态",
+            ),
+            InitializationStep(
+                name="init_di_container",
+                phase=InitializationPhase.DEPENDENCY_INJECTION,
+                handler=self._init_di_container,
+                dependencies=["init_services"],
+                description="初始化依赖注入容器",
+            ),
+            InitializationStep(
+                name="init_plugins",
+                phase=InitializationPhase.EXTENSIONS,
+                handler=self._init_plugins,
+                dependencies=["init_di_container"],
+                description="初始化插件系统",
+            ),
+            InitializationStep(
+                name="init_detectors",
+                phase=InitializationPhase.EXTENSIONS,
+                handler=self._init_detectors,
+                dependencies=["init_di_container"],
+                description="初始化检测器注册表",
+            ),
+            InitializationStep(
+                name="init_brain",
+                phase=InitializationPhase.EXTENSIONS,
+                handler=self._init_brain,
+                dependencies=[],
+                description="初始化 Brain AI 系统（延迟加载）",
+            ),
+            InitializationStep(
+                name="setup_detectors",
+                phase=InitializationPhase.FINALIZATION,
+                handler=self._setup_detectors,
+                dependencies=["init_detectors", "init_brain", "init_di_container"],
+                description="设置检测器和完成初始化",
+            ),
+        ])
 
     def _init_root_window(self, root: tk.Tk) -> None:
         """初始化根窗口配置。"""
