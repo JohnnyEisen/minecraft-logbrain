@@ -1,97 +1,78 @@
 @echo off
 setlocal EnableDelayedExpansion
+chcp 65001 >nul
 
-echo [INFO] Detect Python Environment...
+echo ============================================
+echo MCA Brain System - Optimized EXE Builder
+echo ============================================
+echo.
 
-:: 1. 尝试寻找 Python 3.13 (项目开发环境)
+:: 1. Detect Python
+set "PYTHON_CMD=python"
 py -0 >nul 2>&1
 if %errorlevel% equ 0 (
-    echo [INFO] Python Launcher found. Checking for 3.13...
     py -3.13 --version >nul 2>&1
-    if !errorlevel! equ 0 (
-        set "PYTHON_CMD=py -3.13"
-        echo [INFO] Using Python 3.13 via launcher.
-        goto :FOUND_PYTHON
+    if !errorlevel! equ 0 set "PYTHON_CMD=py -3.13"
+)
+
+%PYTHON_CMD% --version
+if %errorlevel% neq 0 (
+    echo [ERROR] Python not found!
+    pause & exit /b 1
+)
+
+:: 2. Ensure PyInstaller
+%PYTHON_CMD% -m pip show pyinstaller >nul 2>&1
+if %errorlevel% neq 0 (
+    echo [INFO] Installing PyInstaller...
+    %PYTHON_CMD% -m pip install pyinstaller
+    if %errorlevel% neq 0 (
+        echo [ERROR] Failed to install PyInstaller.
+        pause & exit /b 1
     )
 )
 
-:: 2. 尝试检查当前 PATH 的 python 是否符合要求
-python --version 2>&1 | findstr "3.13" >nul
-if %errorlevel% equ 0 (
-    set "PYTHON_CMD=python"
-    echo [INFO] Using 'python' from PATH (Version 3.13).
-    goto :FOUND_PYTHON
-)
-
-:: 3. 如果都没找到，可能用户配置了具体的绝对路径，或者没有安装 3.13
-:: 尝试在默认位置寻找 (Generic Path)
-set "LOCAL_Py313=%LOCALAPPDATA%\Programs\Python\Python313\python.exe"
-if exist "%LOCAL_Py313%" (
-    set "PYTHON_CMD="%LOCAL_Py313%""
-    echo [INFO] Using Auto-detected Path: %LOCAL_Py313%
-    goto :FOUND_PYTHON
-)
-
-echo [WARN] Could not find Python 3.13 automatically.
-echo [WARN] Will use default 'python' command (May be the wrong version: %PYTHON_VERSION%).
-set "PYTHON_CMD=python"
-
-:FOUND_PYTHON
-%PYTHON_CMD% --version
-echo [INFO] Starting build process v1.0.0...
-
-:: Ensure PyInstaller is installed in the TARGET environment
-%PYTHON_CMD% -m pip show pyinstaller >nul 2>&1
-if %errorlevel% equ 0 goto :SKIP_INSTALL
-
-echo [WARN] Environment appears incomplete. Installing dependencies...
-echo [1/2] Installing Build Tools [PyInstaller]...
-%PYTHON_CMD% -m pip install pyinstaller -i https://pypi.tuna.tsinghua.edu.cn/simple
-if %errorlevel% neq 0 (
-        echo [ERROR] Failed to install PyInstaller. Check network.
-        pause
-        exit /b 1
-)
-
-echo [2/2] Installing Project Dependencies [Safe to skip if already installed]...
-%PYTHON_CMD% -m pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
-
-:SKIP_INSTALL
-:: Clean previous builds
-
-:: Clean previous builds
+:: 3. Clean old builds (keep .spec)
 if exist build rmdir /s /q build
 if exist dist rmdir /s /q dist
-if exist *.spec del *.spec
 
-:: Prepare Build Assets (Clean Data)
-echo [INFO] Preparing Clean Build Assets...
-%PYTHON_CMD% "scripts/build/prepare_build.py"
+:: 4. Collect optional libs for Brain DLC users
+echo [INFO] Checking for optional AI/ML libraries for DLC package...
+if exist lib rmdir /s /q lib
+%PYTHON_CMD% "scripts/setup/collect_libs.py"
 if %errorlevel% neq 0 (
-    echo [ERROR] Failed to prepare assets.
-    pause
-    exit /b 1
+    echo [WARN] collect_libs.py failed (non-fatal).
 )
 
-:: Build command
-:: Logic moved to scripts/build/run_build.py for stability and readability
-echo [INFO] Running PyInstaller (via scripts/build/run_build.py)...
-%PYTHON_CMD% "scripts/build/run_build.py"
+:: 5. Build optimized EXE (no AI/ML bloat)
+echo.
+echo [INFO] Building core EXE (PyInstaller)...
+echo [INFO] Note: AI/ML libraries (torch, transformers, etc.) are EXCLUDED.
+echo [INFO] They are available as optional Brain DLC.
+echo.
+%PYTHON_CMD% -m PyInstaller MCA_Brain_System_v1.0.spec --clean --noconfirm
+if %errorlevel% neq 0 (
+    echo [ERROR] Build failed!
+    pause & exit /b 1
+)
 
-if %errorlevel% equ 0 goto :BUILD_SUCCESS
-echo [ERROR] Build failed. Check the output above.
-pause
-exit /b 1
+:: 6. Collect optional libs for DLC package
+if exist lib (
+    echo [INFO] Copying lib to dist for DLC package...
+    xcopy /E /I /Y lib dist\MCA_Brain_System_v1.2\lib >nul
+    rmdir /s /q lib
+)
 
-:BUILD_SUCCESS
-echo [SUCCESS] Core Build complete! App is in dist/MCA_Brain_System_v1.2.0/
-echo [INFO] Collecting external libraries (lib folder)...
-%PYTHON_CMD% "scripts/build/collect_libs.py"
-
-echo [INFO] Creating release archives (lite / full)...
-%PYTHON_CMD% "scripts/build/package_release.py"
-
-echo [INFO] Cleaning up temp assets...
+:: 7. Final clean
 if exist build_assets rmdir /s /q build_assets
 
+echo.
+echo ============================================
+echo BUILD SUCCESS!
+echo Output: dist\MCA_Brain_System_v1.2\
+echo Expected size: ~200-400 MB (core EXE)
+echo.
+echo To use AI Brain features, install DLC:
+echo   pip install torch transformers
+echo ============================================
 pause

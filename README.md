@@ -119,6 +119,7 @@ python main.py
 - 分析建议从通用提示升级为分层动作项，优先给出可直接执行的排查路径。
 
 完整记录请查看 [CHANGELOG.md](CHANGELOG.md)。
+详细说明请查看 [docs/RELEASE_NOTES_v1.5.0.md](docs/RELEASE_NOTES_v1.5.0.md)。
 
 ### 版本口径说明
 
