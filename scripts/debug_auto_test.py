@@ -9,7 +9,7 @@ import threading
 sys.path.insert(0, os.path.abspath("."))
 
 from mca_core.app import MinecraftCrashAnalyzer
-from tools.generate_mc_log import generate_batch, SCENARIOS
+from scripts.dev.generate_mc_log import generate_batch, SCENARIOS
 try:
     from tools.neural_adversary import NeuralAdversaryEngine
     HAS_NEURAL = True

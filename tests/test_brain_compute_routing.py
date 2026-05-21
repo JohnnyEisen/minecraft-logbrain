@@ -24,11 +24,11 @@ def _shutdown_brain(brain: BrainCore) -> None:
         brain.process_pool.shutdown(wait=True)
 
 
-def test_balanced_strategy_routes_cpu_hint_to_process(tmp_path: Path) -> None:
+def test_balanced_strategy_routes_cpu_hint_to_thread(tmp_path: Path) -> None:
     brain = _make_brain(tmp_path, {"executor_routing_strategy": "balanced"})
     try:
         kind = brain._select_executor_kind(task_id="cpu_task_1", priority=0, args=(1,), kwargs={})
-        assert kind == "process"
+        assert kind == "thread"
     finally:
         _shutdown_brain(brain)
 

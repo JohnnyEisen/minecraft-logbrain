@@ -96,7 +96,7 @@ class AutoTestService:
     def _try_import_generator(self):
         """尝试导入日志生成器。"""
         try:
-            from tools.generate_mc_log import generate_batch, parse_size
+            from scripts.dev.generate_mc_log import generate_batch, parse_size
             self._generate_batch = generate_batch
             self._parse_size = parse_size
             self._has_generator = True

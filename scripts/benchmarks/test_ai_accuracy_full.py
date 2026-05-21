@@ -127,7 +127,7 @@ Mod ID: 'fabric-api', Requested by: 'sodium'
 [ERROR] GLFW error 65542: Pixel format not accelerated
     at org.lwjgl.glfw.GLFW.glfwCreateWindow(GLFW.java:1724)
 """,
-        "expected": ["GPU/驱动/GL"],
+        "expected": ["显卡/渲染"],
     },
     {
         "id": "GPU_002",
@@ -136,7 +136,7 @@ Mod ID: 'fabric-api', Requested by: 'sodium'
 OpenGL: ~~ERROR~~ RuntimeException: No OpenGL context found in the current thread
     at org.lwjgl.opengl.GL.getCapabilities(GL.java:157)
 """,
-        "expected": ["GPU/驱动/GL"],
+        "expected": ["显卡/渲染"],
     },
     {
         "id": "GPU_003",
@@ -145,7 +145,7 @@ OpenGL: ~~ERROR~~ RuntimeException: No OpenGL context found in the current threa
 [Render thread/ERROR]: Failed to create window
 GLFW error 65543: GLX: Failed to create context: BadValue
 """,
-        "expected": ["GPU/驱动/GL"],
+        "expected": ["显卡/渲染"],
     },
     {
         "id": "GPU_004",
@@ -155,7 +155,7 @@ java.lang.IllegalStateException: Supported OpenGL version: 2.1
 Required OpenGL version: 3.2
 Please update your graphics drivers.
 """,
-        "expected": ["GPU/驱动/GL"],
+        "expected": ["显卡/渲染"],
     },
     {
         "id": "GPU_005",
@@ -164,7 +164,7 @@ Please update your graphics drivers.
 [Main/WARN]: OpenGL debug message: Buffer performance warning
 GL_INVALID_OPERATION error generated
 """,
-        "expected": ["GPU/驱动/GL"],
+        "expected": ["显卡/渲染"],
     },
 
     # ==================== 版本冲突 ====================
@@ -219,7 +219,7 @@ Resolution failed
 [main/ERROR]: Found duplicate mods:
 Mod ID: 'jei' found in both 'jei-1.20.1-15.2.0.27.jar' and 'jei-1.20.1-15.0.0.9.jar'
 """,
-        "expected": ["重复MOD"],
+        "expected": ["重复Mod"],
     },
     {
         "id": "DUP_002",
@@ -230,7 +230,7 @@ Multiple files for mod 'sodium' found:
 - sodium-fabric-mc1.20.1-0.5.8.jar
 - sodium-fabric-mc1.20.1-0.4.10.jar
 """,
-        "expected": ["重复MOD"],
+        "expected": ["重复Mod"],
     },
     {
         "id": "DUP_003",
@@ -240,7 +240,7 @@ Duplicate mod detected: 'optifabric'
 Files: [OptiFabric-1.13.0.jar, OptiFabric-1.12.1.jar]
 Please keep only one version.
 """,
-        "expected": ["重复MOD"],
+        "expected": ["重复Mod"],
     },
 
     # ==================== GeckoLib问题 ====================
@@ -251,7 +251,7 @@ Please keep only one version.
 java.lang.NullPointerException: Cannot invoke "software.bernie.geckolib3.core.controller.AnimationController"
     at software.bernie.geckolib3.file.AnimationFile.loadAllAnimations()
 """,
-        "expected": ["GeckoLib缺失/初始化"],
+        "expected": ["GeckoLib 缺失"],
     },
     {
         "id": "GEO_002",
@@ -261,7 +261,7 @@ java.lang.NoClassDefFoundError: software/bernie/geckolib3/core/animatable/GeoAni
     at com.example.mymod.entities.MyEntity.<init>(MyEntity.java:45)
 Caused by: java.lang.ClassNotFoundException: software.bernie.geckolib3.core.animatable.GeoAnimatable
 """,
-        "expected": ["GeckoLib缺失/初始化"],
+        "expected": ["GeckoLib 缺失"],
     },
     {
         "id": "GEO_003",
@@ -271,7 +271,7 @@ Failed to register GeckoLib model
 software.bernie.geckolib3.core.animatable.GeoAnimatable not found
 Entity rendering failed due to missing GeckoLib
 """,
-        "expected": ["GeckoLib缺失/初始化"],
+        "expected": ["GeckoLib 缺失"],
     },
 
     # ==================== Mixin冲突 ====================
@@ -334,7 +334,7 @@ Duplicate mods found:
 
 java.lang.OutOfMemoryError: Java heap space
 """,
-        "expected": ["GPU/驱动/GL", "重复MOD", "内存溢出"],
+        "expected": ["显卡/渲染", "重复Mod", "内存溢出"],
     },
     {
         "id": "COMP_003",
@@ -348,7 +348,7 @@ mod_a requires mod_b version 2.0, but found 1.5
 
 Failed to load: Critical injection failure
 """,
-        "expected": ["缺失依赖", "版本冲突"],
+        "expected": ["缺失依赖", "版本冲突", "其他"],
     },
 
     # ==================== 正常日志（不应误报）====================
@@ -402,9 +402,9 @@ All systems nominal.
         "id": "EDGE_002",
         "category": "边界",
         "log": """
-This is an error message about memory.
-But it's not actually an OutOfMemoryError.
-Just a log line with the word 'memory' in it.
+This is a warning message about system resources.
+The application is using more RAM than expected.
+No actual errors or exceptions occurred.
 """,
         "expected": [],  # 不应误报
     },

@@ -546,7 +546,7 @@ class AnalysisMixin:
         self.result_text.delete("1.0", tk.END)
         
         batch_size = 50
-        results = self.analysis_results.copy()
+        results = self.analysis_results  # 直接引用，分批插入期间不会修改
         
         def insert_batch(start_idx: int) -> None:
             end_idx = min(start_idx + batch_size, len(results))

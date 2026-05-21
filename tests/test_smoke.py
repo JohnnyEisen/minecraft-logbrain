@@ -13,7 +13,7 @@ class TestSmoke(unittest.TestCase):
             import mca_core.learning
             import mca_core.file_io
             import config.constants
-            import tools.generate_mc_log
+            import scripts.dev.generate_mc_log
         except ImportError as e:
             self.fail(f"Import failed: {e}")
 

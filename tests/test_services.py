@@ -46,7 +46,6 @@ class TestSystemService(unittest.TestCase):
         info = self.service.get_system_info()
         self.assertIn('platform', info)
         self.assertIn('python', info)
-        # These might be missing if deps not installed, but keys check is good
         
     @patch('mca_core.services.system_service.platform')
     def test_cached_info(self, mock_platform):
@@ -56,10 +55,111 @@ class TestSystemService(unittest.TestCase):
         info1 = self.service.get_system_info()
         self.assertEqual(info1['platform'], "MockOS")
         
-        # Change mock to verify cache is used (should NOT change)
         mock_platform.platform.return_value = "ChangedOS"
         info2 = self.service.get_system_info()
         self.assertEqual(info2['platform'], "MockOS")
+
+    def test_clear_cache(self):
+        self.service._cached_info = {"platform": "cached", "python": "3.9"}
+        self.service.clear_cache()
+        self.assertIsNone(self.service._cached_info)
+
+    def test_get_system_info_after_clear(self):
+        self.service._cached_info = {"platform": "old", "python": "3.9"}
+        self.service.clear_cache()
+        info = self.service.get_system_info()
+        self.assertIsNotNone(info)
+        self.assertIn("platform", info)
+
+    @patch('mca_core.services.system_service.platform')
+    def test_collect_platform_info_exception(self, mock_platform):
+        mock_platform.platform.side_effect = Exception("platform error")
+        mock_platform.python_version.side_effect = Exception("version error")
+        info = self.service._collect_info()
+        self.assertIsInstance(info, dict)
+
+    @patch('mca_core.services.system_service.platform')
+    def test_collect_cpu_memory_no_psutil(self, mock_platform):
+        mock_platform.platform.return_value = "TestOS"
+        mock_platform.python_version.return_value = "3.9"
+        import builtins
+        original_import = builtins.__import__
+        def mock_import(name, *args, **kwargs):
+            if name == 'psutil':
+                raise ImportError("No module named 'psutil'")
+            return original_import(name, *args, **kwargs)
+        with patch('builtins.__import__', side_effect=mock_import):
+            self.service.clear_cache()
+            info = self.service.get_system_info()
+            self.assertIn("platform", info)
+            self.assertEqual(info["platform"], "TestOS")
+
+    @patch('mca_core.services.system_service.platform')
+    def test_collect_cpu_memory_psutil_error(self, mock_platform):
+        mock_platform.platform.return_value = "TestOS"
+        mock_platform.python_version.return_value = "3.9"
+        mock_psutil = MagicMock()
+        mock_psutil.cpu_count.side_effect = Exception("psutil error")
+        with patch.dict('sys.modules', {'psutil': mock_psutil}):
+            self.service.clear_cache()
+            info = self.service._collect_info()
+            self.assertIn("platform", info)
+
+    @patch('mca_core.services.system_service.platform')
+    def test_collect_gpu_no_gputil(self, mock_platform):
+        mock_platform.platform.return_value = "TestOS"
+        mock_platform.python_version.return_value = "3.9"
+        import builtins
+        original_import = builtins.__import__
+        def mock_import(name, *args, **kwargs):
+            if name == 'GPUtil':
+                raise ImportError("No module named 'GPUtil'")
+            return original_import(name, *args, **kwargs)
+        with patch('builtins.__import__', side_effect=mock_import):
+            self.service.clear_cache()
+            info = self.service.get_system_info()
+            self.assertIn("platform", info)
+
+    @patch('mca_core.services.system_service.platform')
+    def test_collect_gpu_gputil_error(self, mock_platform):
+        mock_platform.platform.return_value = "TestOS"
+        mock_platform.python_version.return_value = "3.9"
+        mock_gputil = MagicMock()
+        mock_gputil.getGPUs.side_effect = Exception("GPU error")
+        with patch.dict('sys.modules', {'GPUtil': mock_gputil}):
+            self.service.clear_cache()
+            info = self.service._collect_info()
+            self.assertIn("platform", info)
+
+    @patch('mca_core.services.system_service.platform')
+    def test_psutil_not_installed_handled(self, mock_platform):
+        mock_platform.platform.return_value = "TestOS"
+        mock_platform.python_version.return_value = "3.9"
+        import builtins
+        original_import = builtins.__import__
+        def mock_import(name, *args, **kwargs):
+            if name == 'psutil':
+                raise ImportError("No module named 'psutil'")
+            return original_import(name, *args, **kwargs)
+        with patch('builtins.__import__', side_effect=mock_import):
+            self.service.clear_cache()
+            info = self.service._collect_info()
+            self.assertIn("platform", info)
+
+    @patch('mca_core.services.system_service.platform')
+    def test_gputil_not_installed_handled(self, mock_platform):
+        mock_platform.platform.return_value = "TestOS"
+        mock_platform.python_version.return_value = "3.9"
+        import builtins
+        original_import = builtins.__import__
+        def mock_import(name, *args, **kwargs):
+            if name == 'GPUtil':
+                raise ImportError("No module named 'GPUtil'")
+            return original_import(name, *args, **kwargs)
+        with patch('builtins.__import__', side_effect=mock_import):
+            self.service.clear_cache()
+            info = self.service._collect_info()
+            self.assertIn("platform", info)
 
 if __name__ == '__main__':
     unittest.main()

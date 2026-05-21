@@ -31,7 +31,7 @@ if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
 try:
-    from tools.generate_mc_log import generate_batch
+    from scripts.dev.generate_mc_log import generate_batch
     HAS_LOG_GENERATOR: bool = True
 except ImportError:
     generate_batch = None

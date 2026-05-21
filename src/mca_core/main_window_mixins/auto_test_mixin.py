@@ -15,14 +15,21 @@ if TYPE_CHECKING:
     from .main_window_pyqt import SiliconeCapsuleApp
 
 
-SCENARIOS: dict[str, str] = {
-    "normal": "正常日志",
-    "oom": "内存溢出",
-    "missing_dependency": "缺失前置",
-    "gl_error": "OpenGL 错误",
-    "mixin_conflict": "Mixin 冲突",
-    "version_conflict": "版本冲突",
-}
+def _get_scenarios_from_generator() -> dict[str, dict]:
+    try:
+        from scripts.dev.generate_mc_log import SCENARIOS
+        return dict(SCENARIOS)
+    except ImportError:
+        return {
+            "normal": {"description": "正常日志"},
+            "oom": {"description": "内存溢出"},
+            "missing_dependency": {"description": "缺失前置"},
+            "gl_error": {"description": "OpenGL 错误"},
+            "mixin_conflict": {"description": "Mixin 冲突"},
+            "version_conflict": {"description": "版本冲突"},
+            "compound": {"description": "复合错误"},
+            "adversarial": {"description": "对抗样本"},
+        }
 
 
 class AutoTestMixin:

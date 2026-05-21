@@ -43,6 +43,8 @@ from utils.helpers import mca_clean_modid, mca_levenshtein, mca_normalize_modid
 @dataclass
 class TestResult:
     """测试结果。"""
+    __test__ = False
+
     name: str
     iterations: int
     total_time_ms: float

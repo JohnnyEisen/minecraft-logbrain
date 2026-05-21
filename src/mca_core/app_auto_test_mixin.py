@@ -27,7 +27,7 @@ from config.constants import BASE_DIR, LAB_HEAD_READ_SIZE, AUTO_TESTS_DIR
 from config.constants import CAUSE_MEM, CAUSE_DEP, CAUSE_VER, CAUSE_GPU, CAUSE_OTHER
 
 try:
-    from tools.generate_mc_log import generate_batch, SCENARIOS
+    from scripts.dev.generate_mc_log import generate_batch, SCENARIOS
     from utils.parse_size import parse_size
     from mca_core.file_io import read_text_head
     HAS_LOG_GENERATOR = True
@@ -149,14 +149,11 @@ class AutoTestMixin:
         scenario_frame.pack(fill="x", pady=6)
         
         if SCENARIOS:
-            scenario_names = [f"{k} - {v}" for k, v in SCENARIOS.items()]
+            scenario_names = [f"{k} - {v.get('description', v) if isinstance(v, dict) else v}" for k, v in SCENARIOS.items()]
         else:
-            scenarios = {
-                "normal": "正常日志", "version_conflict": "版本冲突", "missing_dependency": "缺失前置",
-                "mixin_conflict": "Mixin注入失败", "ticking_entity": "实体更新错误",
-                "out_of_memory": "内存溢出", "bad_video_driver": "显卡驱动不兼容",
-            }
-            scenario_names = [f"{k} - {v}" for k, v in scenarios.items()]
+            from scripts.dev.generate_mc_log import SCENARIOS as GEN_SCENARIOS
+            scenario_names = [f"{k} - {v.get('description', v) if isinstance(v, dict) else v}" for k, v in GEN_SCENARIOS.items()]
+        scenario_names.append("custom - 自定义日志")
 
         self.auto_test_scenario_list = tk.Listbox(scenario_frame, selectmode="extended", height=4)
         for s in scenario_names:
@@ -343,17 +340,17 @@ class AutoTestMixin:
     def _run_analysis_for_training(self, log_text: str, file_path: str, learner):
         self._is_auto_testing = True
         
-        backup = {
-            "crash_log": getattr(self, 'crash_log', ''),
-            "file_path": getattr(self, 'file_path', ''),
-            "analysis_results": list(getattr(self, 'analysis_results', [])),
-            "mods": defaultdict(set, getattr(self, 'mods', defaultdict(set))),
-            "mod_names": dict(getattr(self, 'mod_names', {})),
-            "dependency_pairs": set(getattr(self, 'dependency_pairs', set())),
-            "loader_type": getattr(self, 'loader_type', None),
-            "cause_counts": Counter(getattr(self, 'cause_counts', Counter())),
-            "file_checksum": getattr(self, 'file_checksum', None),
-        }
+        saved = (
+            getattr(self, 'crash_log', ''),
+            getattr(self, 'file_path', ''),
+            getattr(self, 'analysis_results', []),
+            getattr(self, 'mods', defaultdict(set)),
+            getattr(self, 'mod_names', {}),
+            getattr(self, 'dependency_pairs', set()),
+            getattr(self, 'loader_type', None),
+            getattr(self, 'cause_counts', Counter()),
+            getattr(self, 'file_checksum', None),
+        )
         old_learner = self.crash_pattern_learner
 
         try:
@@ -383,12 +380,6 @@ class AutoTestMixin:
         finally:
             self._is_auto_testing = False
             self.crash_pattern_learner = old_learner
-            self.crash_log = backup["crash_log"]
-            self.file_path = backup["file_path"]
-            self.analysis_results = backup["analysis_results"]
-            self.mods = backup["mods"]
-            self.mod_names = backup["mod_names"]
-            self.dependency_pairs = backup["dependency_pairs"]
-            self.loader_type = backup["loader_type"]
-            self.cause_counts = backup["cause_counts"]
-            self.file_checksum = backup["file_checksum"]
+            self.crash_log, self.file_path, self.analysis_results = saved[0], saved[1], saved[2]
+            self.mods, self.mod_names, self.dependency_pairs = saved[3], saved[4], saved[5]
+            self.loader_type, self.cause_counts, self.file_checksum = saved[6], saved[7], saved[8]

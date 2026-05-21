@@ -5,16 +5,20 @@ import pytest
 
 from brain_system.security import verify_dlc_signature
 
-
-@pytest.mark.skipif(True, reason="requires cryptography; enabled in CI when installed")
-def test_signature_verify_roundtrip(tmp_path: Path):
-    # 该测试在安装 cryptography 后启用
-    dlc = tmp_path / "x.py"
-    dlc.write_text("print('hi')\n", encoding="utf-8")
-
+try:
+    import cryptography
     from cryptography.hazmat.primitives import hashes
     from cryptography.hazmat.primitives.asymmetric import padding, rsa
     from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+    HAS_CRYPTO = True
+except ImportError:
+    HAS_CRYPTO = False
+
+
+@pytest.mark.skipif(not HAS_CRYPTO, reason="requires cryptography; install with: pip install cryptography")
+def test_signature_verify_roundtrip(tmp_path: Path):
+    dlc = tmp_path / "x.py"
+    dlc.write_text("print('hi')\n", encoding="utf-8")
 
     priv = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     pub = priv.public_key()

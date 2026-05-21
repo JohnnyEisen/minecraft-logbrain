@@ -24,10 +24,6 @@ from typing import Any, Dict
 # 确保路径正确
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "src"))
 
-print(f"Python: {sys.version}")
-print(f"Working Dir: {os.getcwd()}")
-print("-" * 50)
-
 
 def _bench_cpu_task(n: int) -> int:
     """可被进程池安全序列化的 CPU 任务。"""
@@ -54,7 +50,7 @@ async def _shutdown_brain(brain: Any) -> None:
         shutdown = getattr(brain, "shutdown", None)
         if shutdown is None:
             return
-        if hasattr(shutdown, "__await__"):
+        if asyncio.iscoroutinefunction(shutdown):
             await shutdown()
         else:
             shutdown()
@@ -143,7 +139,7 @@ async def test_async_compute() -> Dict[str, float]:
     brain = BrainCore(config_path=config_path)
 
     try:
-        serial_iterations = 80_000
+        serial_iterations = 500_000
         parallel_tasks = min(max(cpu_count * 2, 8), 32)
         io_tasks = min(max(cpu_count * 4, 16), 64)
 
@@ -471,7 +467,7 @@ async def test_executor_throughput_comparison() -> Dict[str, Any]:
     cpu_count = max(1, multiprocessing.cpu_count())
     cpu_tasks = min(max(cpu_count * 4, 24), 128)
     io_tasks = min(max(cpu_count * 8, 48), 256)
-    cpu_iterations = 100_000 if cpu_count <= 8 else 160_000
+    cpu_iterations = 800_000 if cpu_count <= 8 else 1_600_000
     io_delay_seconds = 0.01
 
     print(
@@ -533,6 +529,10 @@ def _parse_args() -> argparse.Namespace:
 async def main() -> Dict[str, Any]:
     """运行所有测试。"""
     args = _parse_args()
+
+    print(f"Python: {sys.version}")
+    print(f"Working Dir: {os.getcwd()}")
+    print("-" * 50)
 
     print("=" * 50)
     print("MCA Brain System AI 性能测试")
