@@ -755,7 +755,12 @@ class AdversarialFuser:
         if HAS_NEURAL_ENGINE:
             try:
                 self.neural_agent = NeuralAdversaryEngine()
-                self.neural_agent.load("e:/分析/analysis_data/adversary_model.pth")
+                # 使用相对路径或环境变量，避免硬编码本地路径
+                model_path = os.environ.get("ADVERSARY_MODEL_PATH", "data/models/adversary_model.pth")
+                if os.path.exists(model_path):
+                    self.neural_agent.load(model_path)
+                else:
+                    print(f"[Fuser] Model not found at {model_path}, skipping load")
             except Exception as e:
                 print(f"[Fuser] Failed to init scenario engine: {e}")
 
