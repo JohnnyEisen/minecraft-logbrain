@@ -1,4 +1,24 @@
 import re
+import os
+
+
+# Path sanitization for privacy - VULN-003 fix
+def _sanitize_path(text: str) -> str:
+    """脱敏文件系统路径，防止用户个人信息泄露到 AI API。
+
+    Args:
+        text: 可能包含文件路径的文本
+
+    Returns:
+        脱敏后的文本
+    """
+    # 替换 Windows 绝对路径中的用户名部分
+    text = re.sub(r'C:\\Users\\[^\\]+', r'C:\\Users\\<user>', text)
+    # 替换 Unix 家目录路径
+    text = re.sub(r'/home/[^/\s]+', r'/home/<user>', text)
+    # 替换 .minecraft 路径中的盘符
+    text = re.sub(r'[A-Z]:\\(?:Users\\[^\\]+\\AppData\\Roaming\\)?\.minecraft', r'<mc_dir>', text)
+    return text
 
 
 _RE_FORGE_MOD = re.compile(r'^U[CHIJE]*\s+[a-zA-Z0-9_\-]+')
@@ -9,18 +29,23 @@ class PromptGenerator:
     """
     Tier 3: The "Doctor's Note" / AI Prompt Generator
     Sanitizes and compresses massive logs into a high-quality Markdown prompt.
+    
+    隐私保护: 所有文件系统路径在发送前自动脱敏。
     """
     
     @staticmethod
     def generate_prompt(crash_log: str, local_diagnosis: str = "") -> str:
+        # VULN-003: 先脱敏再提取
+        sanitized_log = _sanitize_path(crash_log)
+        
         # Extract Crash Stack Trace
-        stack_trace = PromptGenerator._extract_stack_trace(crash_log)
+        stack_trace = PromptGenerator._extract_stack_trace(sanitized_log)
         
         # Extract Java/MC Version details
-        sys_info = PromptGenerator._extract_system_info(crash_log)
+        sys_info = PromptGenerator._extract_system_info(sanitized_log)
         
         # Extract Mod List (truncated if too long)
-        mod_list = PromptGenerator._extract_mod_list(crash_log)
+        mod_list = PromptGenerator._extract_mod_list(sanitized_log)
         
         local_diag_section = ""
         if local_diagnosis.strip():
@@ -50,8 +75,12 @@ Please analyze this crash and tell me:
 
     @staticmethod
     def _extract_stack_trace(log: str) -> str:
-        # Look for typical crash stack starts like "java.lang.NullPointerException", "net.minecraft.crash.ReportedException"
-        match = re.search(r'(?:java\.lang\.[A-Za-z]+Exception|net\.minecraft\.crash\.ReportedException|java\.lang\.Error)[^\n]*\n(?:\s*at .+\n)+', log, re.MULTILINE)
+        # VULN-004 修复: 添加 {1,50} 上限防止 ReDoS
+        # Look for typical crash stack starts
+        match = re.search(
+            r'(?:java\.lang\.[A-Za-z]+Exception|net\.minecraft\.crash\.ReportedException|java\.lang\.Error)[^\n]*\n(?:\s*at .+\n){1,50}',
+            log, re.MULTILINE
+        )
         if match:
             stack = match.group(0).strip()
             # truncate to 30 lines

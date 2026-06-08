@@ -197,7 +197,7 @@ def get_history_count() -> int:
     if not os.path.exists(HISTORY_FILE):
         return 0
     try:
-        with open(HISTORY_FILE, "r", encoding="utf-8-sig") as f:
+        with open(HISTORY_FILE, "r", encoding="utf-8") as f:
             return sum(1 for _ in f)
-    except:
+    except (OSError, IOError):
         return 0

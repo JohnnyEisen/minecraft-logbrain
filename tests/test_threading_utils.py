@@ -54,7 +54,7 @@ class TestThreadPoolManager(unittest.TestCase):
     def test_default_max_workers(self):
         manager = ThreadPoolManager.get_instance()
         cpu_count = os.cpu_count() or 4
-        expected = min(cpu_count * 4, 32)
+        expected = min(cpu_count * 2, 16)
         self.assertEqual(manager.default_max_workers, expected)
 
     def test_set_default_max_workers(self):

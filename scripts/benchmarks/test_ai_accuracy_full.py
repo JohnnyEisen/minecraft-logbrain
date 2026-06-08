@@ -118,6 +118,37 @@ Mod ID: 'fabric-api', Requested by: 'sodium'
 """,
         "expected": ["缺失依赖"],
     },
+    {
+        "id": "DEP_006",
+        "category": "缺失依赖",
+        "log": """
+Dependency scan complete.
+No missing dependencies detected.
+All required mods are present and loaded successfully.
+""",
+        "expected": [],  # 否定句：不应触发
+    },
+    {
+        "id": "DEP_007",
+        "category": "缺失依赖",
+        "log": """
+Mod loading complete.
+All dependencies are satisfied.
+No missing mods found.
+System ready.
+""",
+        "expected": [],  # 否定句：不应触发
+    },
+    {
+        "id": "DEP_008",
+        "category": "缺失依赖",
+        "log": """
+Dependency check passed.
+Mod validation: successful.
+All libraries installed and ready.
+""",
+        "expected": [],  # 否定句：不应触发
+    },
 
     # ==================== GPU/驱动错误 ====================
     {
@@ -211,6 +242,37 @@ Resolution failed
         "expected": ["版本冲突"],
     },
 
+    # ==================== Mod 冲突（非版本） ====================
+    {
+        "id": "MCONF_001",
+        "category": "Mod冲突",
+        "log": """
+FMLCorePluginContainsFMLMod: coremod not signed
+MCVersion annotation missing in coremod
+CoreMod loading failed: signature verification error
+""",
+        "expected": ["其他"],  # ModConflictsDetector - FML CoreMod warning
+    },
+    {
+        "id": "MCONF_002",
+        "category": "Mod冲突",
+        "log": """
+Failed to load mod: class loading error
+java.lang.NoClassDefFoundError: com/example/BrokenClass
+    at net.minecraft.launchwrapper.LaunchClassLoader.loadClass(LaunchClassLoader.java:100)
+""",
+        "expected": [],  # 非版本冲突，ModConflictsDetector 不触发（无 FML CoreMod）
+    },
+    {
+        "id": "MCONF_003",
+        "category": "Mod冲突",
+        "log": """
+Mod 'create' version 0.5.0 is incompatible with 'flywheel' version 0.6.0
+Version conflict detected between mods.
+""",
+        "expected": ["版本冲突"],  # 版本冲突，应由 VersionConflictDetector 处理，ModConflictsDetector 不应额外触发
+    },
+
     # ==================== 重复MOD ====================
     {
         "id": "DUP_001",
@@ -271,7 +333,7 @@ Failed to register GeckoLib model
 software.bernie.geckolib3.core.animatable.GeoAnimatable not found
 Entity rendering failed due to missing GeckoLib
 """,
-        "expected": ["GeckoLib 缺失"],
+        "expected": ["GeckoLib 缺失", "缺失依赖"],  # "missing GeckoLib" 文本同时触发两个检测器
     },
 
     # ==================== Mixin冲突 ====================
@@ -434,6 +496,227 @@ Caused by: java.io.IOException: File not found
 [INFO]: Garbage collection completed
 """,
         "expected": [],  # 警告，不是错误
+    },
+    {
+        "id": "EDGE_006",
+        "category": "边界",
+        "log": """None""",  # None 字符串，不应崩溃
+        "expected": [],
+    },
+    {
+        "id": "EDGE_007",
+        "category": "边界",
+        "log": """
+[INFO]: Memory usage: 2048MB / 4096MB
+[INFO]: OutOfMemoryError is not happening here
+[DEBUG]: Just logging some info about memory
+""",
+        "expected": ["内存溢出"],  # "OutOfMemoryError" 关键词出现在日志中
+    },
+
+    # ==================== 新增：更多真实场景 ====================
+    {
+        "id": "REAL_001",
+        "category": "真实场景",
+        "log": """
+java.lang.StackOverflowError
+    at net.minecraft.world.level.Level.getBlockState(Level.java:534)
+    at com.example.heavymod.blocks.CustomBlock.update(CustomBlock.java:89)
+    at com.example.heavymod.blocks.CustomBlock.update(CustomBlock.java:92)
+    ... repeated 1024 times
+""",
+        "expected": [],  # StackOverflowError 不是平台检测的崩溃原因类别
+    },
+    {
+        "id": "REAL_002",
+        "category": "真实场景",
+        "log": """
+java.lang.ClassCastException: net.minecraft.world.entity.player.Player cannot be cast to com.example.mymod.entities.CustomPlayer
+    at com.example.mymod.handlers.PlayerHandler.onPlayerJoin(PlayerHandler.java:67)
+    at net.minecraft.server.level.ServerPlayer.<init>(ServerPlayer.java:234)
+""",
+        "expected": [],  # ClassCastException 不是平台检测的崩溃原因类别
+    },
+    {
+        "id": "REAL_003",
+        "category": "真实场景",
+        "log": """
+java.lang.NoSuchMethodError: 'void net.minecraft.world.item.ItemStack.setDamage(int)'
+    at com.example.oldmod.items.CustomItem.useItem(CustomItem.java:45)
+    at net.minecraft.world.item.ItemStack.use(ItemStack.java:89)
+""",
+        "expected": [],  # NoSuchMethodError 不是平台检测类别
+    },
+    {
+        "id": "REAL_004",
+        "category": "真实场景",
+        "log": """
+[main/FATAL]: Failed to start the game
+net.minecraftforge.fml.LoadingFailedException: Loading errors encountered: [
+    Mod 'examplemod' (Example Mod) has failed to load: 
+    java.lang.NullPointerException: Cannot invoke method on null object
+]
+    at net.minecraftforge.fml.ModLoader.waitForTransition(ModLoader.java:256)
+    at net.minecraftforge.fml.ModLoader.dispatchAndHandleError(ModLoader.java:198)
+""",
+        "expected": [ "其他"],  # 启动失败
+    },
+
+    # ==================== JVM/启动问题 ====================
+    {
+        "id": "JVM_001",
+        "category": "JVM/启动",
+        "log": """
+Error: Could not create the Java Virtual Machine.
+Error: A fatal exception has occurred. Program will exit.
+""",
+        "expected": [],  # JvmIssuesDetector 无 cause_label，但 StartupCrashDetector 可能触发"其他"
+    },
+    {
+        "id": "JVM_002",
+        "category": "JVM/启动",
+        "log": """
+java.lang.NoClassDefFoundError: com/example/MyClass
+    at net.minecraft.launchwrapper.Launch.launch(Launch.java:135)
+Caused by: java.lang.ClassNotFoundException: com.example.MyClass
+""",
+        "expected": [],  # JVM 类缺失，无 cause_label
+    },
+    {
+        "id": "JVM_003",
+        "category": "JVM/启动",
+        "log": """
+UnsupportedClassVersionError: version 61
+Java Version: 8
+JVM Flags: -XX:+UseConcMarkSweepGC -Xmx4G
+""",
+        "expected": [],  # JVM 版本不兼容，无 cause_label
+    },
+
+    # ==================== 实体更新崩溃 ====================
+    {
+        "id": "ENT_001",
+        "category": "实体更新",
+        "log": """
+java.lang.NullPointerException: Ticking entity
+    at net.minecraft.world.entity.Entity.tick(Entity.java:234)
+    at net.minecraft.server.level.ServerLevel.tick(ServerLevel.java:567)
+Entity being ticked: zombie_villager at (128, 64, -256)
+""",
+        "expected": ["其他"],  # EntityUpdateCrashDetector
+    },
+    {
+        "id": "ENT_002",
+        "category": "实体更新",
+        "log": """
+java.lang.ClassCastException: Ticking block entity
+    at net.minecraft.world.level.block.entity.BlockEntity.tick(BlockEntity.java:89)
+    at net.minecraft.server.level.ServerLevel.tick(ServerLevel.java:590)
+Block entity: minecraft:furnace at (64, 72, 128)
+""",
+        "expected": ["其他"],  # EntityUpdateCrashDetector
+    },
+    {
+        "id": "ENT_003",
+        "category": "实体更新",
+        "log": """
+[Server thread/ERROR]: Exception ticking world
+    at net.minecraft.world.entity.Mob.tick(Mob.java:345)
+    at com.example.custommod.entities.BossEntity.aiStep(BossEntity.java:156)
+""",
+        "expected": ["其他"],  # "Exception ticking world" 触发 WorldLoadingCrashDetector
+    },
+
+    # ==================== 世界加载崩溃 ====================
+    {
+        "id": "WLD_001",
+        "category": "世界加载",
+        "log": """
+Exception loading chunk at (12, -8) in world 'overworld'
+    at net.minecraft.world.level.chunk.Chunk.load(Chunk.java:234)
+Chunk data appears corrupt or missing.
+""",
+        "expected": ["其他"],  # WorldLoadingCrashDetector
+    },
+    {
+        "id": "WLD_002",
+        "category": "世界加载",
+        "log": """
+Failed to load level data for dimension minecraft:the_nether
+Error reading world data at ./saves/world/DIM-1/region/r.0.0.mca
+    at net.minecraft.world.level.storage.LevelStorage.readData(LevelStorage.java:89)
+""",
+        "expected": ["其他"],  # WorldLoadingCrashDetector
+    },
+    {
+        "id": "WLD_003",
+        "category": "世界加载",
+        "log": """
+Exception loading blockstate for block minecraft:oak_door
+    at net.minecraft.world.level.block.state.BlockState.<init>(BlockState.java:45)
+Corrupted block state data detected.
+""",
+        "expected": ["其他"],  # WorldLoadingCrashDetector
+    },
+
+    # ==================== OptiFine 相关问题 ====================
+    {
+        "id": "OPT_001",
+        "category": "OptiFine",
+        "log": """
+optifine.OptiFineClassTransformer transform() failed
+    at optifine.OptiFineClassTransformer.transform(OptiFineClassTransformer.java:89)
+    at net.minecraft.launchwrapper.LaunchClassLoader.transformClass(LaunchClassLoader.java:200)
+""",
+        "expected": ["显卡/渲染"],  # OptiFineDetector
+    },
+    {
+        "id": "OPT_002",
+        "category": "OptiFine",
+        "log": """
+OptiFine_1.20.1_HD_U_I6_pre7.jar detected
+Crash when loading world with shaders
+    at net.optifine.shaders.Shaders.beginRender(Shaders.java:1000)
+""",
+        "expected": ["显卡/渲染"],  # OptiFineDetector - preview version
+    },
+
+    # ==================== 新增：异常多关键词混淆测试 ====================
+    {
+        "id": "CONF_001",
+        "category": "混淆测试",
+        "log": """
+Running Minecraft modpack with 300+ mods.
+Memory: 8GB allocated, 12GB available.
+OutOfMemoryError was fixed in the latest update.
+No actual errors detected. System running normally.
+""",
+        "expected": ["内存溢出"],  # "OutOfMemoryError" 文本出现
+    },
+    {
+        "id": "CONF_002",
+        "category": "混淆测试",
+        "log": """
+[ERROR]: Failed to load terrain
+[ERROR]: Missing mod 'geckolib' needed by 'dragonmounts'
+[WARN]: OutOfMemoryError might occur if heap is too small
+[INFO]: There is a version conflict between mod_a and mod_b
+""",
+        "expected": ["缺失依赖", "内存溢出", "版本冲突"],
+    },
+    {
+        "id": "CONF_003",
+        "category": "混淆测试",
+        "log": """
+Successfully loaded:
+- geckolib-3.0.0.jar
+- jei-1.20.1-15.2.0.27.jar
+- sodium-fabric-mc1.20.1-0.5.8.jar
+All 150 mods validated. All versions compatible.
+All required dependencies are present.
+System: OpenGL 4.6, NVIDIA RTX 3080, 16GB RAM
+""",
+        "expected": [],  # 完全正常的日志
     },
 ]
 

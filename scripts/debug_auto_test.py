@@ -1,3 +1,7 @@
+"""自动测试脚本 — 使用分析引擎直接进行场景测试。
+
+无需依赖 MinecraftCrashAnalyzer (已移除)，直接使用分析引擎组件。
+"""
 
 import sys
 import os
@@ -5,10 +9,8 @@ import time
 from collections import Counter
 import threading
 
-# Add root to sys.path
 sys.path.insert(0, os.path.abspath("."))
 
-from mca_core.app import MinecraftCrashAnalyzer
 from scripts.dev.generate_mc_log import generate_batch, SCENARIOS
 try:
     from tools.neural_adversary import NeuralAdversaryEngine
@@ -16,148 +18,95 @@ try:
 except ImportError:
     HAS_NEURAL = False
 
-# Mocking the UI parts since we are running in console
-import tkinter as tk
-from tkinter import ttk
+from mca_core.detectors.registry import DetectorRegistry
+from mca_core.detectors import (
+    OutOfMemoryDetector, JvmIssuesDetector, VersionConflictsDetector,
+    DuplicateModsDetector, ModConflictsDetector, ShaderWorldConflictsDetector,
+    MissingDependenciesDetector, LoaderDetector, MissingGeckoLibDetector,
+    GeckoLibMoreDetector, GlErrorsDetector
+)
+from mca_core.analysis_engine import AnalysisEngine
 
-class MockApp(MinecraftCrashAnalyzer):
-    def __init__(self):
-        # Skip super().__init__ which creates UI
-        # Initialize only what's needed for analysis
-        try:
-            self.root = tk.Tk()
-            self.root.withdraw()
-        except:
-            self.root = None # Headless
-            
-        self.crash_log = ""
-        self.file_path = ""
-        self.analysis_results = []
-        self.mods = {}
-        self.dependency_pairs = set()
-        self.cause_counts = Counter()
-        self.lock = threading.Lock()
-        self.app_config = None
-        self._log_cache_raw = None
-        
-        # Initialize subsystems
-        from mca_core.detectors.registry import DetectorRegistry
-        from mca_core.detectors import (
-            OutOfMemoryDetector, JvmIssuesDetector, VersionConflictsDetector,
-            DuplicateModsDetector, ModConflictsDetector, ShaderWorldConflictsDetector,
-            MissingDependenciesDetector, LoaderDetector, MissingGeckoLibDetector,
-            GeckoLibMoreDetector, GlErrorsDetector
-        )
-        
-        self.detector_registry = DetectorRegistry()
-        self.detector_registry.register(LoaderDetector())
-        self.detector_registry.register(OutOfMemoryDetector())
-        self.detector_registry.register(JvmIssuesDetector())
-        self.detector_registry.register(MissingDependenciesDetector())
-        self.detector_registry.register(VersionConflictsDetector())
-        self.detector_registry.register(DuplicateModsDetector())
-        self.detector_registry.register(ModConflictsDetector())
-        self.detector_registry.register(ShaderWorldConflictsDetector())
-        self.detector_registry.register(GlErrorsDetector())
-        self.detector_registry.register(MissingGeckoLibDetector())
-        self.detector_registry.register(GeckoLibMoreDetector())
-        
-        # Initialize Brain / Pattern Learner (Optional)
-        self.crash_pattern_learner = None
-        
-        self.plugin_registry = type("MockPluginRegistry", (), {"list": lambda self: []})()
-        self.HAS_NEW_MODULES = False
-        self.brain = None
-        self._analysis_cache = {}
 
-    def _invalidate_log_cache(self):
-        pass
-        
-    def _report_progress(self, val, msg):
-        pass # print(f"[Progress] {val:.2f}: {msg}")
+def create_analysis_engine():
+    """创建分析引擎实例，注册所有检测器。"""
+    registry = DetectorRegistry()
+    registry.register(LoaderDetector())
+    registry.register(OutOfMemoryDetector())
+    registry.register(JvmIssuesDetector())
+    registry.register(MissingDependenciesDetector())
+    registry.register(VersionConflictsDetector())
+    registry.register(DuplicateModsDetector())
+    registry.register(ModConflictsDetector())
+    registry.register(ShaderWorldConflictsDetector())
+    registry.register(GlErrorsDetector())
+    registry.register(MissingGeckoLibDetector())
+    registry.register(GeckoLibMoreDetector())
 
-    # Helper from app.py
-    def add_cause(self, cause_label: str):
-        with self.lock:
-            self.cause_counts[cause_label] += 1
-            
-    def _run_analysis_logic_public(self):
-        return self._run_analysis_logic()
+    engine = AnalysisEngine(detector_registry=registry)
+    return engine
 
-    def _detect_loader(self):
-        txt = (self.crash_log or "").lower()
-        if "neoforge" in txt: return "NeoForge"
-        if "forge" in txt: return "Forge"
-        if "fabric" in txt: return "Fabric"
-        if "quilt" in txt: return "Quilt"
-        return "Unknown"
-        
-    def _extract_mods(self):
-        # Simplified extraction for tests
-        pass
-        
-    def _build_precise_summary(self):
-        pass
-        
-    def _clean_dependency_pairs(self):
-        pass
 
 def run_test_scenario(scenario_name, check_condition, desc):
     print(f"\n[{desc}] Generating '{scenario_name}' Log ...")
     out_dir = "debug_logs/auto_test_runs"
     os.makedirs(out_dir, exist_ok=True)
-    
-    # Use generate_batch
+
     summary = generate_batch(
         output_dir=out_dir,
         count=1,
         scenarios=[scenario_name],
-        target_bytes=512*1024, 
-        seed=None, # Random seed
+        target_bytes=512 * 1024,
+        seed=None,
         report_path=None
     )
-    
+
     file_path = summary[0]["file"]
     with open(file_path, "r", encoding="utf-8") as f:
         log_text = f.read()
-        
-    app = MockApp()
-    app.crash_log = log_text
-    app.file_path = file_path
-    
+
+    engine = create_analysis_engine()
+
     start_t = time.time()
-    app._run_analysis_logic_public()
+    results = engine.analyze(log_text, file_path)
     dur = time.time() - start_t
-    
+
+    cause_counts = Counter()
+    for r in results:
+        cause_counts[r.get("cause", "unknown")] += 1
+
     print(f"   Analysis Time: {dur:.3f}s")
-    print(f"   Causes Found: {dict(app.cause_counts)}")
-    
-    success = check_condition(app)
+    print(f"   Causes Found: {dict(cause_counts)}")
+    print(f"   Results: {len(results)} items")
+
+    success = check_condition(results, cause_counts)
     status = "SUCCESS" if success else "FAILURE"
     print(f"-> {status}")
     return success
 
+
 def test_oom():
-    def check(app):
-        return any("memory" in r.lower() for r in app.analysis_results) or app.cause_counts["内存不足"] > 0
+    def check(results, cause_counts):
+        return any("memory" in str(r).lower() for r in results) or cause_counts.get("内存不足", 0) > 0
     return run_test_scenario("oom", check, "OOM Detection")
 
+
 def test_gl_error():
-    def check(app):
-        return any("gl" in r.lower() or "render" in r.lower() for r in app.analysis_results) or app.cause_counts["显卡/渲染"] > 0
+    def check(results, cause_counts):
+        return any("gl" in str(r).lower() or "render" in str(r).lower() for r in results) or cause_counts.get("显卡/渲染", 0) > 0
     return run_test_scenario("gl_error", check, "OpenGL Error Detection")
 
+
 def test_adversarial():
-    # Only run if engine available? No, generate_batch handles fallback.
-    def check(app):
-        # Adversarial can produce anything, just check if it analyzed successfully (no crash in analyzer)
-        return len(app.analysis_results) >= 0 
-    
+    def check(results, cause_counts):
+        return len(results) >= 0
+
     print("\n[Neural Adversary] Testing AI-Generated Log...")
     if not HAS_NEURAL:
         print("   (Note: NeuralEngine not found, using simulation fallback)")
-        
+
     return run_test_scenario("adversarial", check, "Adversarial Generator Integrity")
+
 
 def run_all_tests():
     print("=== Starting Automated Test Suite ===")
@@ -165,18 +114,15 @@ def run_all_tests():
     results.append(test_oom())
     results.append(test_gl_error())
     results.append(test_adversarial())
-    
+
     passed = sum(results)
     total = len(results)
-    print("="*40)
+    print("=" * 40)
     print(f"Total Tests: {total}")
     print(f"Passed:      {passed}")
-    print(f"Result:      {'PASS' if passed==total else 'FAIL'}")
-    print("="*40)
+    print(f"Result:      {'PASS' if passed == total else 'FAIL'}")
+    print("=" * 40)
+
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "all":
-        run_all_tests()
-    else:
-        # Default run all for convenience
-        run_all_tests()
+    run_all_tests()

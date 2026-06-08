@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import math
+import time
 from typing import TYPE_CHECKING, Any, Optional
 
 from PyQt6.QtCore import QObject, QRect, QSettings, QSize, Qt, pyqtSignal
@@ -261,7 +262,7 @@ class AdaptiveWindowManager(QObject):
                 is_maximized=is_maximized,
                 screen_index=self._current_screen_info.index if self._current_screen_info else 0,
                 screen_name=self._current_screen_info.name if self._current_screen_info else "",
-                timestamp=__import__('time').time()
+                timestamp=time.time()
             )
 
             self._signals.state_saved.emit()
@@ -487,7 +488,9 @@ class AdaptiveWindowManager(QObject):
             self._log_debug(f"屏幕改变事件: {screen.name()}")
 
     def _log_debug(self, message: str) -> None:
-        """输出调试信息"""
+        """输出调试信息（非调试模式下跳过信号发射开销）。"""
+        if not self._debug_mode:
+            return
         formatted = f"[AdaptiveWindow] {message}"
         logger.debug(formatted)
         self._signals.debug_info.emit(formatted)

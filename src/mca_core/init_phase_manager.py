@@ -145,11 +145,30 @@ class InitializationPhaseManager:
             错误信息列表，如果没有错误则为空列表
         """
         errors: List[str] = []
+        phase_order_index = {
+            phase: index for index, phase in enumerate(self._PHASE_ORDER)
+        }
+
         for step_name, step in self._steps.items():
             for dep in step.dependencies:
                 if dep not in self._steps:
                     errors.append(
                         f"步骤 '{step_name}' 依赖不存在的步骤 '{dep}'"
+                    )
+                    continue
+
+                dep_step = self._steps[dep]
+                step_phase_index = phase_order_index.get(step.phase)
+                dep_phase_index = phase_order_index.get(dep_step.phase)
+                if (
+                    step_phase_index is not None
+                    and dep_phase_index is not None
+                    and dep_phase_index > step_phase_index
+                ):
+                    errors.append(
+                        f"步骤 '{step_name}' 跨阶段依赖顺序非法: "
+                        f"依赖 '{dep}' 位于更晚阶段 "
+                        f"'{dep_step.phase.value}'，当前阶段为 '{step.phase.value}'"
                     )
 
         try:

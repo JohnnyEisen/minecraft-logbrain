@@ -14,6 +14,7 @@ import os
 import re
 import sys
 import tempfile
+import threading
 import unittest
 from collections import OrderedDict
 from dataclasses import dataclass
@@ -442,6 +443,64 @@ class TestDetectorRegistry(unittest.TestCase):
         registry = DetectorRegistry()
         registry.load_builtins()
         self.assertGreater(len(registry.list()), 0)
+
+
+# =============================================================================
+# BrainCore _cache_key_cache 并发安全测试 (Bug2 回归)
+# =============================================================================
+
+class TestCacheKeyConcurrency(unittest.TestCase):
+    def test_concurrent_cache_key_generation(self):
+        try:
+            from brain_system.core import BrainCore
+        except ImportError:
+            self.skipTest("BrainCore not available")
+
+        brain = BrainCore()
+        errors = []
+        results = []
+
+        def gen_keys(n):
+            try:
+                for i in range(n):
+                    key = brain._generate_cache_key(lambda x: x, i)
+                    results.append(key)
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=gen_keys, args=(50,)) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+
+        self.assertEqual(len(errors), 0, f"Concurrent _generate_cache_key errors: {errors}")
+        self.assertEqual(len(results), 200)
+
+    def test_cache_key_eviction_no_keyerror(self):
+        """简化的 _generate_cache_key 在并发下不抛 KeyError。"""
+        try:
+            from brain_system.core import BrainCore
+        except ImportError:
+            self.skipTest("BrainCore not available")
+
+        brain = BrainCore()
+
+        errors = []
+        def fill_keys():
+            try:
+                for i in range(100):
+                    brain._generate_cache_key(lambda x: x, i, thread_id=id(threading.current_thread()))
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=fill_keys) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+
+        self.assertEqual(len(errors), 0, f"Concurrent _generate_cache_key errors: {errors}")
 
 
 # =============================================================================

@@ -82,14 +82,16 @@ class TestModuleLoader:
         assert mod is None
 
     def test_load_module_invalid_syntax(self):
+        """VULN-002 修复: 无效 Python 代码被安全验证拦截，返回 None 而非抛出异常"""
         code = "this is invalid python syntax !!!\n"
         with tempfile.NamedTemporaryFile(delete=False, suffix=".py", mode="w", encoding="utf-8") as f:
             f.write(code)
             path = f.name
         try:
             loader = ModuleLoader(os.path.dirname(path))
-            with pytest.raises(SyntaxError):
-                loader.load_module("bad_mod", path)
+            # 安全验证应拒绝加载无效代码，返回 None
+            result = loader.load_module("bad_mod", path)
+            assert result is None, "安全验证应拦截无效代码"
         finally:
             os.unlink(path)
             sys.modules.pop("bad_mod", None)

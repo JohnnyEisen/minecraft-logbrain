@@ -21,6 +21,7 @@ import tempfile
 import threading
 import time
 import unittest
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Any, Callable, List, Optional
@@ -161,7 +162,7 @@ class StressTestSuite:
 
     def test_regex_cache_hit(self, iterations: int = 100000) -> TestResult:
         """正则缓存命中。"""
-        RegexCache._cache = {}
+        RegexCache._cache = OrderedDict()
         RegexCache.get(r'test_pattern', 0)
         
         def hit():
@@ -268,7 +269,7 @@ class TestNullAndEmptyInput(unittest.TestCase):
     
     def test_helpers_none_input(self):
         self.assertIsNone(mca_clean_modid(None))
-        self.assertIsNone(mca_normalize_modid(None, [], None))
+        self.assertIsNone(mca_normalize_modid(None, set(), None))
     
     def test_file_io_nonexistent(self):
         result = read_text_head("/nonexistent/path/file.txt")
@@ -446,7 +447,7 @@ class ExtremeTestSuite:
     def test_massive_regex(self) -> TestResult:
         """百万正则操作。"""
         print("\n[*] Million regex operations...")
-        RegexCache._cache = {}
+        RegexCache._cache = OrderedDict()
         iterations = 1_000_000
         patterns = [r'\d+', r'[a-z]+', r'\w+', r'\s+', r'.*?']
         text = "The quick brown fox 123 jumps over 456 lazy dogs"

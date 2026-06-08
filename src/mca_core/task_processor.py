@@ -150,12 +150,15 @@ def bootstrap_semantic_engine(
             from dlcs.brain_dlc_hardware import HardwareAcceleratorDLC
             brain.register_dlc(HardwareAcceleratorDLC(brain))
 
-        if "Semantic Engine (CodeBERT + UDMA)" not in dlcs:
+        if "Semantic Engine (MiniLM + 7-Optimizations)" not in dlcs and "Semantic Engine (CodeBERT + UDMA)" not in dlcs:
             _report("正在下载/加载语义模型 (all-MiniLM-L6-v2, ~90MB)...")
             from dlcs.brain_dlc_codebert import CodeBertDLC
             brain.register_dlc(CodeBertDLC(brain))
 
-        semantic = getattr(brain, "dlcs", {}).get("Semantic Engine (CodeBERT + UDMA)")
+        semantic = (
+            getattr(brain, "dlcs", {}).get("Semantic Engine (MiniLM + 7-Optimizations)")
+            or getattr(brain, "dlcs", {}).get("Semantic Engine (CodeBERT + UDMA)")
+        )
         if semantic is None:
             return False, "语义引擎 DLC 未挂载"
 
@@ -182,8 +185,8 @@ def ensure_semantic_units(brain: Any) -> tuple[Optional[Any], Optional[Any], str
             encode_text = brain.get_computational_unit("encode_text")
             calculate_similarity = brain.get_computational_unit("calculate_similarity")
             return encode_text, calculate_similarity, ""
-        except Exception:
-            pass
+        except Exception as e:
+            logging.getLogger(__name__).warning("get_computational_unit 失败，将尝试重新注册 DLC: %s", e)
 
     if not hasattr(brain, "register_dlc"):
         return None, None, "当前智脑核心不支持 DLC 动态挂载"
@@ -195,7 +198,7 @@ def ensure_semantic_units(brain: Any) -> tuple[Optional[Any], Optional[Any], str
             from dlcs.brain_dlc_hardware import HardwareAcceleratorDLC
             brain.register_dlc(HardwareAcceleratorDLC(brain))
 
-        if "Semantic Engine (CodeBERT + UDMA)" not in dlcs:
+        if "Semantic Engine (MiniLM + 7-Optimizations)" not in dlcs and "Semantic Engine (CodeBERT + UDMA)" not in dlcs:
             from dlcs.brain_dlc_codebert import CodeBertDLC
             brain.register_dlc(CodeBertDLC(brain))
     except Exception as e:

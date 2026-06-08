@@ -19,12 +19,17 @@ logger = logging.getLogger(__name__)
 PluginEntry = Callable[[Any], None]
 
 # Allowed module imports for plugins (whitelist)
+# VULN-008 修复: 收紧导入白名单，移除 os/sys/threading/asyncio/urllib/http/html/xml
+# 插件如需文件操作，应通过 PluginFileAPI 受限接口实现
+# 网络访问需通过 PluginNetworkAPI 受控接口
 ALLOWED_IMPORTS: Set[str] = {
-    # Standard library
-    'os', 'sys', 'json', 'logging', 'time', 'datetime', 're', 'math',
-    'collections', 'typing', 'pathlib', 'threading', 'asyncio',
-    'urllib', 'http', 'html', 'xml', 'csv', 'io', 'copy',
-    # Third-party (safe)
+    # Standard library (safe subset)
+    'json', 'logging', 'time', 'datetime', 're', 'math',
+    'collections', 'typing', 'pathlib', 'csv', 'io', 'copy',
+    'functools', 'itertools', 'textwrap', 'enum', 'hashlib',
+    'base64', 'traceback', 'configparser',
+    'logging.handlers', 'logging.config',
+    # Third-party (safe, data processing only)
     'numpy', 'matplotlib', 'networkx',
     # Project modules
     'mca_core', 'config', 'brain_system',
@@ -202,6 +207,13 @@ def _validate_plugin_code(filepath: str) -> bool:
                     f'Dangerous pattern detected: {pattern} (file: {filename})'
                 )
         
+        # 1.5 VULN-005 修复: 输入长度限制 — 防止 ReDoS via BYPASS_PATTERNS
+        MAX_PLUGIN_SIZE = 100_000  # 100KB
+        if len(code) > MAX_PLUGIN_SIZE:
+            raise PluginSecurityError(
+                f'插件代码过大 ({len(code)} bytes)，最大允许 {MAX_PLUGIN_SIZE} bytes (file: {filename})'
+            )
+        
         # 2. Check bypass patterns (regex)
         for regex, description in COMPILED_BYPASS_PATTERNS:
             if regex.search(code):
@@ -233,7 +245,7 @@ def _validate_plugin_code(filepath: str) -> bool:
                     )
         
         # 6. Calculate file hash for integrity check
-        file_hash = hashlib.sha256(code.encode()).hexdigest()[:16]
+        file_hash = hashlib.sha256(code.encode()).hexdigest()
         logger.debug(f'Plugin {filename} hash: {file_hash}')
         
         return True

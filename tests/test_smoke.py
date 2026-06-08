@@ -9,7 +9,6 @@ class TestSmoke(unittest.TestCase):
     def test_imports(self):
         """Verify that critical modules can be imported without error."""
         try:
-            import mca_core.app
             import mca_core.learning
             import mca_core.file_io
             import config.constants

@@ -123,6 +123,8 @@ class IdleTrainer:
     def stop(self):
         self.running = False
         self.stop_event.set()
+        if self.thread and self.thread.is_alive():
+            self.thread.join(timeout=5.0)
 
     def _is_resource_ok(self):
         try:
@@ -131,7 +133,7 @@ class IdleTrainer:
             if GPUtil:
                 gpus = GPUtil.getGPUs()
                 if gpus and max(g.load * 100 for g in gpus) > self.max_gpu: return False
-        except: 
+        except Exception:
             pass
         return True
 
@@ -143,7 +145,7 @@ class IdleTrainer:
                 p.nice(psutil.IDLE_PRIORITY_CLASS)
             else:
                 p.nice(19)
-        except:
+        except Exception:
             pass
             
         while not self.stop_event.is_set():
@@ -151,7 +153,7 @@ class IdleTrainer:
                 if self._session_active:
                     self._session_active = False
                     self._session_deadline = None
-                time.sleep(2)
+                self.stop_event.wait(2.0)
                 continue
 
             if self._is_resource_ok() and not self.paused:
@@ -181,7 +183,9 @@ class IdleTrainer:
                     )
                     
                     if summary:
-                        fpath = summary[0]["file"]
+                        fpath = summary[0].get("file")
+                        if not fpath:
+                            continue
                         success = self.analyzer.run_cycle(fpath)
                         if success:
                             self.trained_count += 1
@@ -190,7 +194,8 @@ class IdleTrainer:
                         try:
                             if os.path.exists(fpath):
                                 os.remove(fpath)
-                        except: pass
+                        except OSError:
+                            pass
                         
                     # Sleep a bit to yield CPU
                     time.sleep(1) 

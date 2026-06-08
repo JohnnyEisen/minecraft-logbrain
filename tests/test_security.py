@@ -108,7 +108,7 @@ class TestInputSanitizer(unittest.TestCase):
         self.assertIsNone(InputSanitizer.sanitize_url(""))
 
     def test_sanitize_url_none(self):
-        self.assertIsNone(InputSanitizer.sanitize_url(None))
+        self.assertIsNone(InputSanitizer.sanitize_url(None))  # type: ignore[arg-type]
 
     def test_sanitize_url_malformed(self):
         self.assertIsNone(InputSanitizer.sanitize_url("not a valid :// url at all"))
@@ -200,6 +200,7 @@ class TestIntegrityChecker(unittest.TestCase):
             f.write("hello world")
         h = self.checker.compute_file_hash(test_file)
         self.assertIsInstance(h, str)
+        assert h is not None
         self.assertEqual(len(h), 64)
 
     def test_compute_file_hash_same_content(self):
@@ -223,7 +224,7 @@ class TestIntegrityChecker(unittest.TestCase):
 
     def test_compute_file_hash_nonexistent(self):
         h = self.checker.compute_file_hash("/nonexistent/file.txt")
-        self.assertEqual(h, "")
+        self.assertIsNone(h)
 
     def test_verify_integrity_no_files(self):
         ok, modified = self.checker.verify_integrity({})
@@ -404,7 +405,8 @@ class TestExternalLibValidator(unittest.TestCase):
 
     def test_validate_unknown_module(self):
         ok, reason = ExternalLibValidator.validate_module("some_unknown_mod")
-        self.assertTrue(ok)
+        self.assertFalse(ok)
+        self.assertIn("无法", reason)
 
     def test_validate_lib_directory_not_exists(self):
         ok, warnings = ExternalLibValidator.validate_lib_directory("/nonexistent")
@@ -470,11 +472,11 @@ class TestResourceLimiter(unittest.TestCase):
 class TestErrorSanitizerEdgeCases(unittest.TestCase):
 
     def test_sanitize_error_none_message(self):
-        result = ErrorSanitizer.sanitize_error_message(None)
+        result = ErrorSanitizer.sanitize_error_message(None)  # type: ignore[arg-type]
         self.assertEqual(result, "未知错误")
 
     def test_sanitize_traceback_none(self):
-        result = ErrorSanitizer.sanitize_traceback(None)
+        result = ErrorSanitizer.sanitize_traceback(None)  # type: ignore[arg-type]
         self.assertEqual(result, "")
 
     def test_sanitize_traceback_with_home(self):

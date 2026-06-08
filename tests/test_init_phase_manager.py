@@ -93,6 +93,60 @@ class TestDependencyValidation:
         errors = manager.validate_dependencies()
         assert len(errors) == 0
 
+    def test_cross_phase_dependency_to_later_phase_is_invalid(self):
+        manager = InitializationPhaseManager()
+        manager.register_step(InitializationStep(
+            name="core_step",
+            phase=InitializationPhase.CORE_SERVICES,
+            handler=lambda: None,
+            dependencies=["final_step"],
+        ))
+        manager.register_step(InitializationStep(
+            name="final_step",
+            phase=InitializationPhase.FINALIZATION,
+            handler=lambda: None,
+        ))
+
+        errors = manager.validate_dependencies()
+        assert any(
+            "跨阶段" in err and "core_step" in err and "final_step" in err
+            for err in errors
+        )
+
+    def test_cross_phase_dependency_to_earlier_phase_is_valid(self):
+        manager = InitializationPhaseManager()
+        manager.register_step(InitializationStep(
+            name="infra_step",
+            phase=InitializationPhase.INFRASTRUCTURE,
+            handler=lambda: None,
+        ))
+        manager.register_step(InitializationStep(
+            name="core_step",
+            phase=InitializationPhase.CORE_SERVICES,
+            handler=lambda: None,
+            dependencies=["infra_step"],
+        ))
+
+        errors = manager.validate_dependencies()
+        assert len(errors) == 0
+
+    def test_same_phase_dependency_is_valid(self):
+        manager = InitializationPhaseManager()
+        manager.register_step(InitializationStep(
+            name="first",
+            phase=InitializationPhase.CORE_SERVICES,
+            handler=lambda: None,
+        ))
+        manager.register_step(InitializationStep(
+            name="second",
+            phase=InitializationPhase.CORE_SERVICES,
+            handler=lambda: None,
+            dependencies=["first"],
+        ))
+
+        errors = manager.validate_dependencies()
+        assert len(errors) == 0
+
     def test_missing_dependency_error(self):
         manager = InitializationPhaseManager()
         manager.register_step(InitializationStep(
@@ -421,7 +475,7 @@ class TestQueryAndClear:
 
 
 class TestFullIntegration:
-    """模拟真实场景的集成测试——复刻 MinecraftCrashAnalyzer 初始化流程。"""
+    """模拟真实场景的集成测试——复刻主应用初始化流程。"""
 
     def test_full_init_flow_simulated(self):
         manager = InitializationPhaseManager()
