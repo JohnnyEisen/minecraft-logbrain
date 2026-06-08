@@ -236,12 +236,13 @@ class DebugDetector:
             if os.path.exists(f):
                 return True
         
-        try:
-            with open('/proc/cpuinfo', 'r') as f:
-                if 'hypervisor' in f.read():
-                    return True
-        except:
-            pass
+        if os.name == 'posix' and os.path.exists('/proc/cpuinfo'):
+            try:
+                with open('/proc/cpuinfo', 'r') as f:
+                    if 'hypervisor' in f.read():
+                        return True
+            except (OSError, IOError):
+                pass
         
         return False
 
@@ -249,13 +250,13 @@ class DebugDetector:
 class IntegrityChecker:
     """文件完整性校验，防止关键文件被篡改"""
     
-    def __init__(self, base_dir: str = None):
+    def __init__(self, base_dir: Optional[str] = None):
         import os
         self.base_dir = base_dir or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         self._hash_cache: dict = {}
-        
-    def compute_file_hash(self, filepath: str) -> str:
-        """计算文件的 SHA256 哈希（分块读取，避免大文件内存占用）。"""
+    
+    def compute_file_hash(self, filepath: str) -> Optional[str]:
+        """计算文件的 SHA-256 哈希（流式读取，支持大文件）。"""
         import hashlib
         
         try:
@@ -264,10 +265,13 @@ class IntegrityChecker:
                 for chunk in iter(lambda: f.read(64 * 1024), b''):
                     h.update(chunk)
             return h.hexdigest()
-        except Exception:
-            return ""
+        except (FileNotFoundError, PermissionError, OSError):
+            return None
+        except Exception as e:
+            logger.warning(f"计算文件哈希失败: {filepath} - {e}")
+            return None
     
-    def verify_integrity(self, known_hashes: dict = None) -> tuple:
+    def verify_integrity(self, known_hashes: Optional[dict] = None) -> tuple:
         """验证关键文件完整性"""
         import os
         
@@ -308,7 +312,7 @@ class IntegrityChecker:
         
         return hashes
     
-    def save_baseline(self, filepath: str = None) -> bool:
+    def save_baseline(self, filepath: Optional[str] = None) -> bool:
         """
         保存当前哈希基线到本地文件（离线模式使用）
         
@@ -339,7 +343,7 @@ class IntegrityChecker:
         except Exception:
             return False
     
-    def load_baseline(self, filepath: str = None) -> dict:
+    def load_baseline(self, filepath: Optional[str] = None) -> dict:
         """
         加载本地哈希基线
         
@@ -358,7 +362,7 @@ class IntegrityChecker:
                 with open(filepath, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                     return data.get("files", {})
-        except:
+        except (json.JSONDecodeError, OSError, IOError, ValueError):
             pass
         return {}
     
@@ -446,7 +450,7 @@ class GitHubAutoRepair:
         repo_owner: str,
         repo_name: str,
         branch: str = "main",
-        token: str = None
+        token: Optional[str] = None
     ):
         """
         初始化 GitHub 自动修复
@@ -478,6 +482,7 @@ class GitHubAutoRepair:
             (success, content_or_error_message)
         """
         import urllib.request
+        import urllib.error
         import json
         
         url = f"{self.base_url}/repos/{self.repo_owner}/{self.repo_name}/contents/{file_path}?ref={self.branch}"
@@ -601,7 +606,7 @@ def get_default_repair() -> GitHubAutoRepair | None:
                     branch=config.get("branch", "main"),
                     token=token
                 )
-        except:
+        except (json.JSONDecodeError, OSError, IOError, KeyError, ValueError):
             pass
     
     return None
@@ -647,10 +652,12 @@ class ExternalLibValidator:
                 if spec.origin.startswith(str(stdlib)) or spec.origin.startswith(str(sitepkgs)):
                     return (True, "标准库/site-packages")
                 return (False, f"未知路径: {spec.origin}")
-        except:
-            pass
-        
-        return (True, "默认允许")
+            return (False, "无法解析模块来源")
+        except (ImportError, AttributeError, ValueError, ModuleNotFoundError) as e:
+            # M-003 修复: 验证失败时默认拒绝，而非默认允许
+            return (False, f"无法验证模块来源: {e}")
+        except Exception as e:
+            return (False, f"模块验证异常: {e}")
     
     @classmethod
     def validate_lib_directory(cls, lib_dir: str) -> tuple:

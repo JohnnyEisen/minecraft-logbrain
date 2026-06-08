@@ -19,7 +19,7 @@ if TYPE_CHECKING:
     from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
     from matplotlib.figure import Figure
 
-from mca_core.detectors import DetectorRegistry
+from mca_core.log_service import LogService
 from mca_core.task_processor import (
     AnalysisHost,
     bootstrap_semantic_engine,
@@ -28,12 +28,10 @@ from mca_core.task_processor import (
     _RE_MOD_JAR,
     _RE_MISSING_MOD,
     _RE_MOD_REQUIRES,
-    _RE_INVALID_INJECTION,
-    _RE_INVALID_DESCRIPTOR,
-    _RE_INVALID_DESCRIPTOR_LINE,
 )
 PyQtAnalyzerHost = AnalysisHost
 from mca_core.diagnostic_engine import DiagnosticEngine
+from mca_core.result_ranker import rank_results, format_ranked_output
 
 try:
     from scripts.dev.generate_mc_log import generate_batch
@@ -351,18 +349,14 @@ class AutoTestWorker(QThread):
                         if self.engine:
                             engine_results = self.engine.analyze(log_content)
                             for res in engine_results:
-                                rtype = res.get("type", res.get("name", "未知"))
-                                rule_count += 1
-                                rule_types.add(rtype)
-                        
-                        registry = DetectorRegistry.get_instance()
-                        host = PyQtAnalyzerHost(log_content)
-                        detection_results = registry.run_all_parallel(host)
-                        
-                        for dr in detection_results:
-                            detector_name = dr.detector
-                            detector_hits.append(detector_name)
-                            detector_types.add(detector_name)
+                                detector_name = res.get("detector")
+                                if detector_name:
+                                    detector_hits.append(detector_name)
+                                    detector_types.add(detector_name)
+                                else:
+                                    rtype = res.get("type", res.get("name", "未知"))
+                                    rule_count += 1
+                                    rule_types.add(rtype)
                         
                         total_hits = rule_count + len(detector_hits)
                         
@@ -493,55 +487,51 @@ class AnalysisWorker(QThread):
         try:
             self.signals.progress.emit(10, "初始化分析器环境...")
             host = PyQtAnalyzerHost(self.log_text)
-            
-            self.signals.progress.emit(20, "启动诊断引擎...")
-            self.signals.append_log.emit(">> 开始本地规则库分析...")
-            
-            results = self.engine.analyze(self.log_text)
-            output: list[str] = []
-            
-            if results:
-                self.signals.append_log.emit(">> 发现已知崩溃特征！")
-                for res in results:
-                    title = res.get("title") or res.get("name") or res.get("type") or "未知"
-                    output.append(f"• 发现问题: {title}")
 
+            self.signals.progress.emit(20, "启动诊断引擎...")
+            self.signals.append_log.emit(">> 启动 MCA 诊断引擎...")
+
+            # engine.analyze 内部已集成 Detector 系统，传入 host 以回写结果
+            results = self.engine.analyze(self.log_text, host)
+            output: list[str] = []
+
+            # 正则规则的降级结果（detector 系统不可用时触发）
+            regex_results = [r for r in results if not r.get("detector")]
+            if regex_results:
+                output.append(">> 规则库匹配到已知特征：")
+                for res in regex_results:
+                    title = res.get("title") or res.get("name") or res.get("type") or "未知"
+                    output.append(f"  - {title}")
                     diagnosis = res.get("diagnosis")
                     if isinstance(diagnosis, str) and diagnosis.strip():
-                        output.append(f"  - 诊断: {diagnosis.strip()}")
-
+                        output.append(f"    诊断: {diagnosis.strip()}")
                     sol = res.get("solution", res.get("solutions", []))
                     if isinstance(sol, list):
                         for s in sol:
-                            output.append(f"  - {s}")
-                    else:
-                        output.append(f"  - {sol}")
-            else:
-                self.signals.append_log.emit(">> 基础正则诊断未发现明确匹配。")
-            
-            self.signals.progress.emit(40, "运行深度检测器...")
-            self.signals.append_log.emit("\n>> 开始运行高级深度检测器 (Detectors)...")
-            
-            registry = DetectorRegistry.get_instance()
-            registry.run_all_parallel(host)
-            
-            if host.analysis_results:
-                self.signals.append_log.emit(">> 检测器发现深度问题！")
-                for res in host.analysis_results:
-                    output.append(f"• {res}")
-            else:
-                self.signals.append_log.emit(">> 深度检测器未发现明显问题。")
+                            output.append(f"    修复: {s}")
 
-            if not output:
-                output.append("本地诊断引擎及深度检测器均未发现明确的崩溃原因。")
-                
+            self.signals.progress.emit(40, "运行深度检测器...")
+            self.signals.append_log.emit(">> 深度检测器 (Detectors) 运行完成。")
+
+            # 检测器已通过 engine.analyze(host=host) 运行完成
+            if host.analysis_results:
+                self.signals.append_log.emit(">> 正在排序和优先级分析...")
+                ranked = rank_results(host.analysis_results)
+                formatted = format_ranked_output(ranked)
+                output.append(formatted)
+            else:
+                if not regex_results:
+                    output.append("未发现明显问题。")
+
             self.signals.progress.emit(70, "本地诊断完成，连接智脑系统...")
-            
+
             if self.brain:
                 self.signals.append_log.emit(">> 启动 MCA 智脑 (AI 模型) 深度分析...")
                 try:
                     ai_result = self._run_semantic_analysis()
-                    output.append("\n=== 智脑深度诊断 ===")
+                    output.append("\n" + "=" * 48)
+                    output.append("  [智脑辅助分析]")
+                    output.append("=" * 48)
                     output.append(ai_result)
                 except Exception as ai_e:
                     self.signals.append_log.emit(f">> 智脑分析出现异常: {ai_e}")
@@ -553,6 +543,6 @@ class AnalysisWorker(QThread):
                 host.mods,
                 dict(host.cause_counts)
             )
-            
+
         except Exception as e:
             self.signals.error.emit(f"分析失败: {str(e)}")

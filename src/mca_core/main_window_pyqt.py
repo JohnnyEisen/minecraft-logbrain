@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import csv
 import json
+import logging
 import os
 import platform
 import re
@@ -54,6 +55,12 @@ from mca_core.services.config_service import ConfigService
 from mca_core.diagnostic_engine import DiagnosticEngine
 from mca_core.services.log_service import LogService
 from mca_core.services.system_service import SystemService
+from mca_core.archive_utils import (
+    collect_logs_from_paths,
+    cleanup_temp_dir,
+    is_archive_file,
+    is_log_file,
+)
 from mca_core.analysis_engine import (
     load_gpu_rules as _get_gpu_rules,
     format_hardware_report,
@@ -76,6 +83,22 @@ from mca_core.workers_pyqt import (
     HAS_BRAIN,
 )
 from mca_core.main_window_mixins import MenuMixin, AutoTestMixin, AnalysisMixin
+
+try:
+    from mca_core.patch_panel_pyqt import PatchPanel
+    HAS_PATCH_PANEL: bool = True
+except ImportError:
+    HAS_PATCH_PANEL = False
+    PatchPanel = None
+
+try:
+    from mca_core.dashboard.dashboard_panel_pyqt import DashboardPanelPyQt
+    from mca_core.dashboard.controller import DashboardController
+    HAS_DASHBOARD_PANEL: bool = True
+except ImportError:
+    HAS_DASHBOARD_PANEL = False
+    DashboardPanelPyQt = None
+    DashboardController = None
 
 if TYPE_CHECKING:
     from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
@@ -129,6 +152,8 @@ def _get_gpu_rules() -> dict[str, Any]:
         pass
     _gpu_rules_cache = {}
     return {}
+
+logger = logging.getLogger(__name__)
 
 
 class SiliconeCapsuleApp(MenuMixin, AutoTestMixin, AnalysisMixin, QMainWindow):
@@ -188,6 +213,8 @@ class SiliconeCapsuleApp(MenuMixin, AutoTestMixin, AnalysisMixin, QMainWindow):
         self._window_state_manager = WindowStateManager()
         
         super().__init__()
+        self.setAcceptDrops(True)
+        self._pending_temp_dirs: list[tuple[str, str]] = []
         self._init_window()
         self._init_backend()
         self.setup_ui()
@@ -370,6 +397,96 @@ class SiliconeCapsuleApp(MenuMixin, AutoTestMixin, AnalysisMixin, QMainWindow):
         ScreenAdapter._log("窗口关闭，状态已保存")
         event.accept()
 
+    # ==================== 拖放支持 ====================
+
+    def _filter_drop_paths(self, urls: list) -> list[str]:
+        """从拖放的 URL 列表中筛选有效文件路径。
+
+        Args:
+            urls: QUrl 列表
+
+        Returns:
+            有效文件路径列表
+        """
+        from PyQt6.QtCore import QUrl
+        paths: list[str] = []
+        for url in urls:
+            if url.isLocalFile():
+                path = url.toLocalFile()
+                if os.path.isfile(path) or is_archive_file(path):
+                    paths.append(path)
+        return paths
+
+    def dragEnterEvent(self, event) -> None:
+        """拖入窗口时显示接受指示。"""
+        if event.mimeData().hasUrls():
+            paths = self._filter_drop_paths(event.mimeData().urls())
+            if paths:
+                event.acceptProposedAction()
+                self._set_drag_overlay_visible(True)
+                return
+        event.ignore()
+
+    def dragMoveEvent(self, event) -> None:
+        """拖动过程中保持接受状态。"""
+        if event.mimeData().hasUrls():
+            paths = self._filter_drop_paths(event.mimeData().urls())
+            if paths:
+                event.acceptProposedAction()
+                return
+        event.ignore()
+
+    def dragLeaveEvent(self, event) -> None:
+        """拖离窗口时隐藏提示。"""
+        self._set_drag_overlay_visible(False)
+        event.accept()
+
+    def dropEvent(self, event) -> None:
+        """释放拖放文件时加载日志。"""
+        self._set_drag_overlay_visible(False)
+        if event.mimeData().hasUrls():
+            paths = self._filter_drop_paths(event.mimeData().urls())
+            if paths:
+                event.acceptProposedAction()
+                self.load_from_paths(paths)
+                return
+        event.ignore()
+
+    def resizeEvent(self, event) -> None:
+        """窗口大小改变时更新拖放覆盖层位置。"""
+        super().resizeEvent(event)
+        if hasattr(self, "_drag_overlay") and self._drag_overlay.isVisible():
+            self._drag_overlay.setGeometry(self.rect())
+
+    def _set_drag_overlay_visible(self, visible: bool) -> None:
+        """显示/隐藏拖放提示覆盖层。
+
+        Args:
+            visible: 是否显示
+        """
+        if not hasattr(self, "_drag_overlay"):
+            self._drag_overlay = QLabel(self)
+            self._drag_overlay.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._drag_overlay.setStyleSheet("""
+                QLabel {
+                    background: rgba(44, 163, 237, 0.85);
+                    color: white;
+                    font-size: 24px;
+                    font-weight: bold;
+                    border: 3px dashed rgba(255, 255, 255, 0.8);
+                    border-radius: 12px;
+                }
+            """)
+            self._drag_overlay.setText("松开以加载日志文件")
+            self._drag_overlay.setVisible(False)
+
+        if visible:
+            self._drag_overlay.setGeometry(self.rect())
+            self._drag_overlay.raise_()
+        self._drag_overlay.setVisible(visible)
+
+    # ==================== 后端初始化 ====================
+
     def _init_backend(self) -> None:
         """初始化后端服务。"""
         self.log_service = LogService()
@@ -393,6 +510,7 @@ class SiliconeCapsuleApp(MenuMixin, AutoTestMixin, AnalysisMixin, QMainWindow):
         self.graph_canvas: Any = None
         self._graph_placeholder: Optional[QLabel] = None
         self._brain_config_path: Optional[str] = None
+        self.dashboard_controller: Any = None
         
         brain_config = os.path.join(ROOT_DIR, "config", "brain_config.json")
         if not os.path.exists(brain_config):
@@ -1024,6 +1142,18 @@ class SiliconeCapsuleApp(MenuMixin, AutoTestMixin, AnalysisMixin, QMainWindow):
         self.btn_settings = QPushButton("系统设置")
         self.btn_settings.clicked.connect(self.on_settings_clicked)
 
+        self.btn_patch = QPushButton("补丁管理")
+        self.btn_patch.clicked.connect(self._on_patch_clicked)
+        if not HAS_PATCH_PANEL:
+            self.btn_patch.setEnabled(False)
+            self.btn_patch.setToolTip("补丁管理模块不可用 (mca_core.patch_panel_pyqt 导入失败)")
+
+        self.btn_dashboard = QPushButton("仪表盘")
+        self.btn_dashboard.clicked.connect(self._on_dashboard_clicked)
+        if not HAS_DASHBOARD_PANEL:
+            self.btn_dashboard.setEnabled(False)
+            self.btn_dashboard.setToolTip("仪表盘模块不可用 (mca_core.dashboard.dashboard_panel_pyqt 导入失败)")
+
         self.btn_start_ai = QPushButton("启用语义分析")
         self.btn_start_ai.clicked.connect(self.start_ai_init_if_needed)
         
@@ -1040,6 +1170,8 @@ class SiliconeCapsuleApp(MenuMixin, AutoTestMixin, AnalysisMixin, QMainWindow):
         
         self.toolbar_layout.addWidget(self.btn_load)
         self.toolbar_layout.addWidget(self.btn_analyze)
+        self.toolbar_layout.addWidget(self.btn_patch)
+        self.toolbar_layout.addWidget(self.btn_dashboard)
         self.toolbar_layout.addWidget(self.btn_start_ai)
         self.toolbar_layout.addWidget(self.btn_settings)
         self.toolbar_layout.addWidget(self.status_label)
@@ -1075,7 +1207,7 @@ class SiliconeCapsuleApp(MenuMixin, AutoTestMixin, AnalysisMixin, QMainWindow):
         log_title.setStyleSheet("font-weight: bold; font-size: 14px;")
         self.log_text_edit = QTextEdit()
         self.log_text_edit.setReadOnly(True)
-        self.log_text_edit.setPlaceholderText("请点击上方「加载日志」按钮...")
+        self.log_text_edit.setPlaceholderText("点击上方「加载日志」按钮或拖拽日志文件 / 压缩包到此窗口...")
         self.log_text_edit.setStyleSheet("font-family: Consolas, monospace; font-size: 12px; background: transparent; border: none;")
         
         self.log_layout.addWidget(log_title)
@@ -1107,6 +1239,16 @@ class SiliconeCapsuleApp(MenuMixin, AutoTestMixin, AnalysisMixin, QMainWindow):
         self._setup_graphs_tab()
         self._setup_hardware_tab()
         self._setup_auto_test_tab()
+        self._setup_patch_tab()
+        self._setup_dashboard_tab()
+
+        self.tabs.addTab(self.tab_results, "诊断报告")
+        self.tabs.addTab(self.tab_mods, "环境与模组")
+        self.tabs.addTab(self.tab_graphs, "依赖图表")
+        self.tabs.addTab(self.tab_hardware, "硬件分析")
+        self.tabs.addTab(self.tab_auto_test, "自动化测试")
+        self.tabs.addTab(self.tab_patch, "补丁管理")
+        self.tabs.addTab(self.tab_dashboard, "仪表盘")
 
     def _setup_results_tab(self) -> None:
         """设置结果标签页。"""
@@ -1215,12 +1357,51 @@ class SiliconeCapsuleApp(MenuMixin, AutoTestMixin, AnalysisMixin, QMainWindow):
         self.auto_test_log_edit.setPlaceholderText("自动化测试日志输出...")
         self.auto_test_log_edit.setStyleSheet("font-family: Consolas, monospace; font-size: 12px; border: none; background: transparent;")
         self.tab_auto_test_layout.addWidget(self.auto_test_log_edit)
-        
-        self.tabs.addTab(self.tab_results, "诊断报告")
-        self.tabs.addTab(self.tab_mods, "环境与模组")
-        self.tabs.addTab(self.tab_graphs, "依赖图表")
-        self.tabs.addTab(self.tab_hardware, "硬件分析")
-        self.tabs.addTab(self.tab_auto_test, "自动化测试")
+
+    def _setup_patch_tab(self) -> None:
+        """设置补丁管理标签页。"""
+        self.tab_patch = QWidget()
+        self.tab_patch_layout = QVBoxLayout(self.tab_patch)
+        self.tab_patch_layout.setContentsMargins(0, 0, 0, 0)
+
+        if HAS_PATCH_PANEL:
+            self.patch_panel = PatchPanel(parent=self)
+            self.tab_patch_layout.addWidget(self.patch_panel)
+        else:
+            placeholder = QLabel("补丁管理模块不可用\n请确保 mca_core.patch_panel_pyqt 可正常导入")
+            placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            placeholder.setStyleSheet("color: #a0aec0; font-size: 14px;")
+            self.tab_patch_layout.addWidget(placeholder)
+
+    def _on_patch_clicked(self) -> None:
+        """切换到补丁管理标签页。"""
+        self.tabs.setCurrentWidget(self.tab_patch)
+
+    def _setup_dashboard_tab(self) -> None:
+        """设置仪表盘标签页。"""
+        self.tab_dashboard = QWidget()
+        self.tab_dashboard_layout = QVBoxLayout(self.tab_dashboard)
+        self.tab_dashboard_layout.setContentsMargins(0, 0, 0, 0)
+
+        if HAS_DASHBOARD_PANEL:
+            self.dashboard_panel = DashboardPanelPyQt(parent=self)
+            if DashboardController is not None and self.dashboard_controller is None:
+                self.dashboard_controller = DashboardController()
+                self.dashboard_controller.start()
+            if self.dashboard_controller is not None:
+                self.dashboard_panel.set_dashboard(self.dashboard_controller)
+                if self.engine and hasattr(self.engine, "set_dashboard_controller"):
+                    self.engine.set_dashboard_controller(self.dashboard_controller)
+            self.tab_dashboard_layout.addWidget(self.dashboard_panel)
+        else:
+            placeholder = QLabel("仪表盘模块不可用\n请确保 mca_core.dashboard.dashboard_panel_pyqt 可正常导入")
+            placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            placeholder.setStyleSheet("color: #a0aec0; font-size: 14px;")
+            self.tab_dashboard_layout.addWidget(placeholder)
+
+    def _on_dashboard_clicked(self) -> None:
+        """切换到仪表盘标签页。"""
+        self.tabs.setCurrentWidget(self.tab_dashboard)
 
     def on_settings_clicked(self) -> None:
         """处理设置按钮点击。"""
@@ -1267,17 +1448,124 @@ class SiliconeCapsuleApp(MenuMixin, AutoTestMixin, AnalysisMixin, QMainWindow):
                 self.config_service.set_highlight_size_limit(highlight_spin.value())
                 self.config_service.save()
                 apply_version_specific_optimizations(selected_mode)
-                QMessageBox.information(self, "设置已保存", f"已应用 {selected_mode} 模式的运行时优化。")
+                logger.info(f"已应用 {selected_mode} 模式的运行时优化。")
             except Exception as e:
                 QMessageBox.warning(self, "设置失败", f"应用优化失败: {str(e)}")
 
-    def on_load_clicked(self) -> None:
-        """处理加载按钮点击。"""
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, "选择崩溃日志文件", "", "日志文件 (*.log *.txt);;所有文件 (*.*)"
+    def load_from_paths(self, paths: list[str]) -> None:
+        """从多个路径加载日志（支持压缩包和普通文件）。
+
+        自动识别压缩包，解压并提取日志文件，
+        支持同时拖入多个文件合并分析。
+
+        Args:
+            paths: 文件路径列表
+        """
+        import time, threading
+        from mca_core.file_io import read_text_limited
+
+        if not paths:
+            return
+
+        # 收集日志文件（自动处理压缩包解压）
+        log_paths, skipped, temp_dirs = collect_logs_from_paths(paths)
+
+        # 记录临时目录供后续清理
+        self._pending_temp_dirs.extend(temp_dirs)
+
+        # 显示跳过信息
+        if skipped:
+            skipped_msg = "部分文件跳过:\n" + "\n".join(f"  - {s}" for s in skipped[:5])
+            if len(skipped) > 5:
+                skipped_msg += f"\n  ... 以及其他 {len(skipped) - 5} 条"
+            logger.warning(skipped_msg)
+
+        if not log_paths:
+            QMessageBox.warning(
+                self,
+                "未找到日志",
+                f"未在选定文件中找到可分析的日志文件。\n\n{skipped_msg}" if skipped else "未找到可分析的日志文件。"
+            )
+            return
+
+        # 统计信息
+        archive_count = len(temp_dirs)
+        direct_count = len(log_paths) - sum(
+            len([f for f in log_paths if temp_dir in f])
+            for temp_dir, _ in temp_dirs
         )
-        if file_path:
-            self.load_log_file(file_path)
+        # 更简单地：解压文件数 vs 直接文件数
+        extracted_files = []
+        direct_files = []
+        for lp in log_paths:
+            found = False
+            for td, _ in temp_dirs:
+                if lp.startswith(td):
+                    extracted_files.append(lp)
+                    found = True
+                    break
+            if not found:
+                direct_files.append(lp)
+
+        self._set_status_text(f"状态: 正在加载 {len(direct_files)} 个文件 + {len(temp_dirs)} 个压缩包...")
+
+        # 读取所有日志内容
+        all_contents: list[str] = []
+        for i, log_path in enumerate(log_paths):
+            try:
+                content = read_text_limited(log_path)
+                if content.strip():
+                    all_contents.append(f"# 文件: {os.path.basename(log_path)}\n\n{content}")
+            except Exception as e:
+                logger.warning(f"读取文件失败: {log_path}: {e}")
+
+        if not all_contents:
+            QMessageBox.warning(self, "读取失败", "所有日志文件均为空或读取失败。")
+            return
+
+        # 合并日志内容
+        merged_text = "\n\n" + "=" * 80 + "\n\n".join(all_contents)
+
+        # 显示加载
+        self.log_service.set_log_text(merged_text)
+        self.file_path = log_paths[0]  # 主文件路径
+        self.log_text_edit.setPlainText(merged_text)
+        self.btn_analyze.setEnabled(True)
+        self.result_text_edit.clear()
+
+        # 状态摘要
+        summary_parts = []
+        if direct_files:
+            summary_parts.append(f"{len(direct_files)} 个文件")
+        if temp_dirs:
+            summary_parts.append(f"{len(temp_dirs)} 个压缩包")
+
+        total_size = sum(len(c.encode('utf-8')) for c in all_contents)
+        self._set_status_text(
+            f"状态: 已加载 {', '.join(summary_parts)} "
+            f"({len(all_contents)} 篇日志, {total_size / 1024:.1f} KB)"
+        )
+
+        # 异步清理旧的临时目录（延迟 30 秒）
+        old_temp_dirs = self._pending_temp_dirs[:]
+        self._pending_temp_dirs = []
+        def _delayed_cleanup():
+            time.sleep(30)
+            for td, _ in old_temp_dirs:
+                cleanup_temp_dir(td)
+        threading.Thread(target=_delayed_cleanup, daemon=True).start()
+
+    def on_load_clicked(self) -> None:
+        """处理加载按钮点击（支持多文件选择和压缩包）。"""
+        file_paths, _ = QFileDialog.getOpenFileNames(
+            self, "选择崩溃日志文件或压缩包", "",
+            "支持的文件 (*.log *.txt *.zip *.7z *.rar *.tar.gz *.tar *.tar.bz2 *.tar.xz);;"
+            "日志文件 (*.log *.txt);;"
+            "压缩包 (*.zip *.7z *.rar *.tar.gz *.tar *.tar.bz2 *.tar.xz);;"
+            "所有文件 (*.*)"
+        )
+        if file_paths:
+            self.load_from_paths(list(file_paths))
 
     def load_log_file(self, file_path: str) -> None:
         """
@@ -1388,7 +1676,9 @@ class SiliconeCapsuleApp(MenuMixin, AutoTestMixin, AnalysisMixin, QMainWindow):
         self.current_mods = dict(mods or {})
         self.current_cause_counts = dict(cause_counts or {})
 
-        self.result_text_edit.append("\n" + "="*40 + "\n[最终诊断结果总结]\n")
+        self.result_text_edit.append("\n" + "=" * 60)
+        self.result_text_edit.append("  MCA 诊断分析结果")
+        self.result_text_edit.append("=" * 60 + "\n")
         self.result_text_edit.append(result_text)
         
         self.mod_list_widget.addItem(f"检测到 {len(mods)} 个独立模组:")
