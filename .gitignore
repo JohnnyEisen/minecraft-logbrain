@@ -126,6 +126,7 @@ node_modules/
 .claude/
 .cursor/
 .sisyphus/
+.trae/
 
 # ==================== OS ====================
 Thumbs.db
@@ -133,3 +134,18 @@ Desktop.ini
 .DS_Store
 $RECYCLE.BIN/
 .gitnexus
+.patch_key
+
+# ==================== 临时测试文件 ====================
+test_output.txt
+test_results.txt
+*.test.json
+verify_patch_e2e.py
+tools/_debug*.py
+tools/_test*.py
+.approved_patches
+patches/
+diagnostic_rules.json
+
+# ==================== 安全测试报告 ====================
+PENTEST_REPORT*.md
