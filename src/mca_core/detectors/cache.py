@@ -169,7 +169,7 @@ class DetectorCache:
         Returns:
             缓存键字符串
         """
-        return hashlib.sha256(crash_log.encode("utf-8", errors="replace")).hexdigest()[:32]
+        return hashlib.sha256(crash_log.encode("utf-8", errors="replace")).hexdigest()
     
     def get(self, key: str) -> Optional[List["DetectionResult"]]:
         """
@@ -334,18 +334,23 @@ class DetectorCache:
             oldest_key = next(iter(self._cache))
             self._remove_entry(oldest_key)
     
-    def _estimate_size(self, results: List["DetectionResult"]) -> int:
-        """估计结果大小。"""
+    def _estimate_size(self, results: List[Any]) -> int:
         total = 0
         for r in results:
-            total += len(r.detector) * 2
-            total += len(r.message) * 2
-            if r.cause_label:
-                total += len(r.cause_label) * 2
-            for key, value in r.metadata.items():
-                total += len(key) * 2
-                if isinstance(value, str):
-                    total += len(value) * 2
+            if isinstance(r, dict):
+                total += len(str(r)) * 2
+            else:
+                total += len(getattr(r, "detector", "")) * 2
+                total += len(getattr(r, "message", "")) * 2
+                cause = getattr(r, "cause_label", None)
+                if cause:
+                    total += len(cause) * 2
+                meta = getattr(r, "metadata", {})
+                if isinstance(meta, dict):
+                    for key, value in meta.items():
+                        total += len(str(key)) * 2
+                        if isinstance(value, str):
+                            total += len(value) * 2
         return total
 
 

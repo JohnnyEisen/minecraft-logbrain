@@ -86,7 +86,8 @@ class DetectorRegistry:
         if cls._instance is None:
             instance = cls()
             instance.load_builtins()
-        assert cls._instance is not None
+        if cls._instance is None:
+            raise RuntimeError("检测器注册表初始化失败")
         return cls._instance
 
     @classmethod
@@ -226,6 +227,10 @@ class DetectorRegistry:
             from .missing_geckolib import MissingGeckoLibDetector
             from .geckolib_more import GeckoLibMoreDetector
             from .gl_errors import GlErrorsDetector
+            from .startup_crash import StartupCrashDetector
+            from .world_loading_crash import WorldLoadingCrashDetector
+            from .entity_update_crash import EntityUpdateCrashDetector
+            from .optifine_detector import OptiFineDetector
 
             classes_set.update([
                 LoaderDetector,
@@ -239,6 +244,10 @@ class DetectorRegistry:
                 MissingGeckoLibDetector,
                 GeckoLibMoreDetector,
                 GlErrorsDetector,
+                StartupCrashDetector,
+                WorldLoadingCrashDetector,
+                EntityUpdateCrashDetector,
+                OptiFineDetector,
             ])
         except ImportError as e:
             logger.critical(f"Static fallback failed: {e}")
@@ -313,9 +322,10 @@ class DetectorRegistry:
             futures = [executor.submit(_run_one, d) for d in self._detectors]
             wait(futures)
         else:
-            with ThreadPoolExecutor(max_workers=max_workers) as internal_executor:
-                futures = [internal_executor.submit(_run_one, d) for d in self._detectors]
-                wait(futures)
+            from mca_core.threading_utils import ThreadPoolManager
+            pool = ThreadPoolManager.get_instance().get_pool("detectors", max_workers=max_workers)
+            futures = [pool.submit(_run_one, d) for d in self._detectors]
+            wait(futures)
 
         return context.results
 

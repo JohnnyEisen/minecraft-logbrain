@@ -25,9 +25,20 @@ class MissingGeckoLibDetector(Detector):
         for m in self._RE_MOD_INSTANCE.finditer(crash_log):
             ids.add(m.group(1))
         if not ids:
-            for modid in analyzer.mods.keys():
-                if "zombie" in modid.lower():
-                    ids.add(modid)
+            # 从 crash log 中提取与 GeckoLib 相关的实体类名
+            for m in re.finditer(
+                r"at\s+([a-z][a-z0-9_]*\.[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+)"
+                r"\.(?:<init>|<clinit>|\w+)\([^)]*\.java:\d+\)",
+                crash_log, re.IGNORECASE
+            ):
+                pkg = m.group(1).lower()
+                if "geckolib" in pkg:
+                    continue
+                parts = pkg.split(".")
+                for part in parts:
+                    if len(part) > 3 and part not in ("net", "com", "org", "software", "bernie", "core", "animatable", "controller", "model", "renderer", "entity", "client", "common", "server", "util", "utils", "api", "impl", "internal"):
+                        ids.add(part)
+                        break
         analyzer.geckolib_missing_mods = sorted(ids)
         return context.results
 

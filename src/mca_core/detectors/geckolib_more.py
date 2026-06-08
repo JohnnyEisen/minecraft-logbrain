@@ -36,7 +36,7 @@ class GeckoLibMoreDetector(Detector):
         return context.results
 
     def get_name(self) -> str:
-        return "GeckoLibDetector"
+        return "GeckoLibMoreDetector"
 
     def get_cause_label(self) -> Optional[str]:
         return CAUSE_GECKO

@@ -28,6 +28,14 @@ class MixinConflictsDetector(Detector):
         r"^.*Invalid descriptor on.*$",
         re.IGNORECASE | re.MULTILINE
     )
+    # MixinBooter / LaunchWrapper 引导失败模式
+    _RE_NOSUCHFIELD = re.compile(r"NoSuchFieldError", re.IGNORECASE)
+    _RE_INVOCATION_TARGET = re.compile(r"InvocationTargetException", re.IGNORECASE)
+    _RE_CLEANROOM_MIXIN = re.compile(r"CLEANROOM_DISABLE_MIXIN_CONFIGS", re.IGNORECASE)
+    _RE_MIXIN_BOOTSTRAP = re.compile(
+        r"(?:MixinBootstrap|MixinBooter|LaunchWrapper).*?(?:error|exception|failed)",
+        re.IGNORECASE
+    )
     
     @classmethod
     def _get_error_patterns(cls) -> List[re.Pattern]:
@@ -44,6 +52,9 @@ class MixinConflictsDetector(Detector):
                 r"Compatibility\s+error\s+in\s+Mixin",
                 r"Found\s+incompatible\s+mixin\s+configuration",
                 r"Mixin\s+.*\s+could\s+not\s+be\s+applied",
+                r"NoSuchFieldError",
+                r"InvocationTargetException",
+                r"CLEANROOM_DISABLE_MIXIN_CONFIGS",
             ]
             cls._ERROR_PATTERNS = [re.compile(p, re.IGNORECASE) for p in patterns]
         return cls._ERROR_PATTERNS
@@ -98,6 +109,30 @@ class MixinConflictsDetector(Detector):
         for pattern in self._get_error_patterns():
             if pattern.search(txt):
                 error_matches.append(pattern.pattern)
+        
+        # MixinBooter / NoSuchFieldError / InvocationTargetException 引导失败
+        has_bootstrap_failure = (
+            self._RE_NOSUCHFIELD.search(txt)
+            and self._RE_CLEANROOM_MIXIN.search(txt)
+        ) or (
+            self._RE_INVOCATION_TARGET.search(txt)
+            and self._RE_MIXIN_BOOTSTRAP.search(txt)
+        )
+        if has_bootstrap_failure:
+            context.add_result(
+                "Detected Mixin bootstrap failure: MixinBooter/MixinBootstrap initialization error.",
+                detector=self.get_name(),
+                cause_label=CAUSE_OTHER
+            )
+            context.add_result(
+                "  Likely cause: incompatible MixinBooter/MixinBootstrap version or conflicting coremod.",
+                detector=self.get_name()
+            )
+            context.add_result(
+                "Suggestion: Update MixinBooter/MixinBootstrap, check Cleanroom Loader compatibility.",
+                detector=self.get_name()
+            )
+            return context.results
         
         # Collect warning signals
         warning_matches = []

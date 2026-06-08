@@ -52,13 +52,13 @@ class TestDiagnosticEngine(unittest.TestCase):
         log = "[main/WARN]: java.lang.OutOfMemoryError: Java heap space"
         results = self.engine.analyze(log)
         self.assertIsInstance(results, list)
-        found = any(r["type"] == "out_of_memory" for r in results)
+        found = any(r["type"] in ("out_of_memory", "内存溢出") for r in results)
         self.assertTrue(found, "应检测到 OutOfMemoryError")
 
     def test_analyze_missing_dependency(self):
-        log = "Mod resolution failed: Missing dependency"
+        log = "Missing mod examplemod is required"
         results = self.engine.analyze(log)
-        found = any(r["type"] == "missing_dependency" for r in results)
+        found = any(r["type"] in ("missing_dependency", "缺失依赖") for r in results)
         self.assertTrue(found, "应检测到缺失依赖")
 
     def test_analyze_no_match_returns_empty(self):

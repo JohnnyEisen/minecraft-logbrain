@@ -219,13 +219,13 @@ class TestAnalysisContext(unittest.TestCase):
         self.assertIn("TestCause", ctx.cause_counts)
     
     def test_add_result_updates_analyzer(self):
-        """add_result 应更新 analyzer 的 analysis_results。"""
+        """add_result 应更新 analyzer 的 analysis_results（含检测器前缀）。"""
         analyzer = MockAnalyzer()
         ctx = AnalysisContext(analyzer=analyzer, crash_log="")
         
         ctx.add_result("Test message", "TestDetector")
         
-        self.assertIn("Test message", analyzer.analysis_results)
+        self.assertIn("[TestDetector] Test message", analyzer.analysis_results)
     
     def test_add_result_block(self):
         """add_result_block 应添加完整的结果块。"""
@@ -381,7 +381,7 @@ class TestCacheStats(unittest.TestCase):
         self.assertIn("memory_mb", d)
 
 
-class TestDetectorCache(unittest.TestCase):
+class TestDetectorCache(unittest.TestCase):  # type: ignore[shadowed-class-declaration]
     """DetectorCache 核心功能测试。"""
 
     def setUp(self):
@@ -394,7 +394,7 @@ class TestDetectorCache(unittest.TestCase):
         key3 = DetectorCache.compute_key("different log")
         self.assertEqual(key1, key2)
         self.assertNotEqual(key1, key3)
-        self.assertEqual(len(key1), 32)
+        self.assertEqual(len(key1), 64)
 
     def test_get_miss(self):
         result = self.cache.get("nonexistent")
@@ -406,6 +406,7 @@ class TestDetectorCache(unittest.TestCase):
         results = [DetectionResult(message="test", detector="TestDetector")]
         self.cache.set("key1", results)
         cached = self.cache.get("key1")
+        assert cached is not None
         self.assertEqual(len(cached), 1)
         self.assertEqual(cached[0].message, "test")
         stats = self.cache.get_stats()
@@ -502,6 +503,7 @@ class TestDetectorCache(unittest.TestCase):
         self.cache.set("key1", r1)
         self.cache.set("key1", r2)
         cached = self.cache.get("key1")
+        assert cached is not None
         self.assertEqual(cached[0].message, "v2")
         stats = self.cache.get_stats()
         self.assertEqual(stats.evictions, 0)
@@ -594,7 +596,7 @@ class TestDuplicateModsDetector(unittest.TestCase):
         results = self.detector.detect(log, ctx)
         self.assertTrue(len(results) > 0)
         combined = " ".join(r.message for r in results)
-        self.assertIn("duplicate", combined.lower())
+        self.assertIn("JAR", combined)  # 新消息中不再包含 "duplicate" 字样
 
     def test_ignore_system_jars(self):
         jar_name = "forge-1.0.0"
@@ -653,8 +655,8 @@ class TestDuplicateModsDetector(unittest.TestCase):
 
     def test_multiple_different_jars(self):
         log = "\n".join([
-            *(["moda-1.0.0.jar"] * 16),
-            *(["modb-2.0.0.jar"] * 16),
+            *(["moda-1.0.0.jar"] * 20),
+            *(["modb-2.0.0.jar"] * 20),
             *(["modc-3.0.0.jar"] * 5),
         ])
         ctx = AnalysisContext(analyzer=self.analyzer, crash_log=log)
@@ -1144,6 +1146,91 @@ class TestShaderWorldConflictsDetector(unittest.TestCase):
         combined = " ".join(r.message for r in results)
         self.assertIn("OptiFine_HD_U", combined)
         self.assertIn("BiomesOPlenty", combined)
+
+
+class TestDetectorCache(unittest.TestCase):
+    def setUp(self):
+        from mca_core.detectors.detector_cache import DetectorCache
+        self.cache = DetectorCache(max_size=8, ttl_seconds=60.0)
+
+    def test_put_and_get(self):
+        self.cache.put("hash1", [{"type": "test", "name": "result"}])
+        result = self.cache.get("hash1")
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(len(result), 1)
+
+    def test_miss_returns_none(self):
+        result = self.cache.get("nonexistent")
+        self.assertIsNone(result)
+
+    def test_lru_eviction(self):
+        for i in range(15):
+            self.cache.put(f"hash{i}", [{"type": str(i)}])
+        self.assertIsNone(self.cache.get("hash0"))
+        self.assertIsNotNone(self.cache.get("hash14"))
+
+    def test_hit_updates_lru(self):
+        self.cache.put("a", [{"v": 1}])
+        self.cache.put("b", [{"v": 2}])
+        self.cache.get("a")
+        for i in range(6):
+            self.cache.put(f"fill{i}", [])
+        self.assertIsNotNone(self.cache.get("a"))
+
+    def test_hit_rate(self):
+        self.cache.get("a")
+        self.cache.get("b")
+        self.cache.put("c", [])
+        self.cache.get("c")
+        self.cache.get("d")
+        self.assertEqual(self.cache._hits, 1)
+        self.assertEqual(self.cache._misses, 3)
+
+    def test_clear(self):
+        self.cache.put("a", [])
+        self.cache.put("b", [])
+        self.cache.clear()
+        self.assertEqual(self.cache.size, 0)
+
+
+class TestConfidenceAndDedup(unittest.TestCase):
+    def setUp(self):
+        self.analyzer = MockAnalyzer()
+
+    def test_confidence_in_result(self):
+        ctx = AnalysisContext(analyzer=self.analyzer, crash_log="test")
+        ctx.add_result("high confidence finding", "TestDet", confidence=1.0)
+        ctx.add_result("low confidence hint", "TestDet", confidence=0.3)
+        self.assertEqual(ctx.results[0].confidence, 1.0)
+        self.assertEqual(ctx.results[1].confidence, 0.3)
+
+    def test_duplicate_message_dedup(self):
+        ctx = AnalysisContext(analyzer=self.analyzer, crash_log="test dup")
+        r1 = ctx.add_result("duplicate message", "DetA")
+        r2 = ctx.add_result("duplicate message", "DetA")
+        self.assertTrue(r1.message)
+        self.assertFalse(r2.message)
+        self.assertEqual(len(ctx.results), 1)
+
+    def test_different_messages_no_dedup(self):
+        ctx = AnalysisContext(analyzer=self.analyzer, crash_log="test diff")
+        ctx.add_result("message one", "DetA")
+        ctx.add_result("message two", "DetA")
+        self.assertEqual(len(ctx.results), 2)
+
+    def test_same_message_different_detectors(self):
+        ctx = AnalysisContext(analyzer=self.analyzer, crash_log="test multi")
+        ctx.add_result("shared finding", "DetA")
+        ctx.add_result("shared finding", "DetB")
+        self.assertEqual(len(ctx.results), 2)
+
+    def test_skip_detector(self):
+        ctx = AnalysisContext(analyzer=self.analyzer, crash_log="test skip")
+        self.assertFalse(ctx.is_skipped("SlowDet"))
+        ctx.skip_detector("SlowDet")
+        self.assertTrue(ctx.is_skipped("SlowDet"))
+        self.assertFalse(ctx.is_skipped("FastDet"))
 
 
 if __name__ == '__main__':

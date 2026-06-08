@@ -4,14 +4,16 @@
 定义检测器和分析上下文的数据结构。
 
 类说明:
-    - DetectionResult: 单个检测结果数据类
+    - DetectionResult: 单个检测结果数据类（含置信度评分）
     - AnalysisContext: 分析上下文，管理检测过程状态
+
+版本: 2.0 — 新增置信度评分、跳过提示、进度回调、结果去重
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Set
 
 if TYPE_CHECKING:
     from threading import RLock
@@ -19,73 +21,51 @@ if TYPE_CHECKING:
 
 @dataclass
 class DetectionResult:
-    """
-    检测结果数据类。
-    
-    存储单个检测器的检测结果。
-    
-    Attributes:
-        message: 检测结果消息
-        detector: 检测器名称
-        cause_label: 关联的原因标签（可选）
-        metadata: 额外元数据字典
-    """
-    
     message: str
     detector: str
     cause_label: Optional[str] = None
+    confidence: float = 1.0
     metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def __hash__(self) -> int:
+        return hash((self.message[:120], self.detector))
 
 
 @dataclass
 class AnalysisContext:
-    """
-    分析上下文数据类。
-    
-    管理检测过程中的状态和结果收集。
-    提供线程安全的结果添加方法。
-    
-    Attributes:
-        analyzer: 分析器实例（提供 lock 和 analysis_results）
-        crash_log: 崩溃日志文本
-        results: 检测结果列表
-        cause_counts: 原因统计字典
-    
-    方法:
-        - add_result: 添加单个检测结果（线程安全）
-        - add_result_block: 批量添加检测结果（线程安全）
-    """
-    
     analyzer: Any
     crash_log: str
     results: List[DetectionResult] = field(default_factory=list)
     cause_counts: Dict[str, int] = field(default_factory=dict)
     crash_log_lower: str = field(default="", init=False, repr=False)
 
+    _seen_messages: Set[str] = field(default_factory=set, repr=False)
+    _skip_detectors: Set[str] = field(default_factory=set, repr=False)
+
     def __post_init__(self) -> None:
         self.crash_log_lower = (self.crash_log or "").lower()
+
+    def skip_detector(self, name: str) -> None:
+        self._skip_detectors.add(name)
+
+    def is_skipped(self, name: str) -> bool:
+        return name in self._skip_detectors
 
     def _add_result_internal(
         self,
         message: str,
         detector: str,
         cause_label: Optional[str],
-        metadata: Dict[str, Any]
+        metadata: Dict[str, Any],
+        confidence: float = 1.0,
     ) -> DetectionResult:
-        """
-        内部方法：添加结果（不获取锁，调用者必须持有锁）。
-        
-        Args:
-            message: 结果消息
-            detector: 检测器名称
-            cause_label: 原因标签
-            metadata: 元数据字典
-            
-        Returns:
-            创建的检测结果
-        """
+        msg_key = f"{detector}:{message[:120]}"
+        if msg_key in self._seen_messages:
+            return DetectionResult(message="", detector="", confidence=0.0)
+        self._seen_messages.add(msg_key)
+
         if self.analyzer and message:
-            self.analyzer.analysis_results.append(message)
+            self.analyzer.analysis_results.append(f"[{detector}] {message}")
             if hasattr(self.analyzer, "_auto_test_write_log"):
                 try:
                     self.analyzer._auto_test_write_log(
@@ -110,7 +90,8 @@ class AnalysisContext:
             message=message,
             detector=detector,
             cause_label=cause_label,
-            metadata=metadata or {}
+            confidence=confidence,
+            metadata=metadata or {},
         )
         self.results.append(res)
         return res
@@ -120,55 +101,34 @@ class AnalysisContext:
         message: str,
         detector: str,
         cause_label: Optional[str] = None,
-        **metadata: Any
+        confidence: float = 1.0,
+        **metadata: Any,
     ) -> DetectionResult:
-        """
-        添加单个检测结果（线程安全）。
-        
-        Args:
-            message: 结果消息
-            detector: 检测器名称
-            cause_label: 原因标签（可选）
-            **metadata: 额外元数据
-            
-        Returns:
-            创建的检测结果
-        """
         lock: Optional[RLock] = getattr(self.analyzer, "lock", None)
         if lock:
             with lock:
-                return self._add_result_internal(message, detector, cause_label, metadata)
+                return self._add_result_internal(
+                    message, detector, cause_label, metadata or {}, confidence
+                )
         else:
-            return self._add_result_internal(message, detector, cause_label, metadata)
+            return self._add_result_internal(
+                message, detector, cause_label, metadata or {}, confidence
+            )
 
     def add_result_block(
         self,
         header: str,
         items: List[str],
         detector: str,
-        cause_label: Optional[str] = None
+        cause_label: Optional[str] = None,
+        confidence: float = 1.0,
     ) -> None:
-        """
-        批量添加检测结果（线程安全）。
-        
-        原子性地添加标题和多个条目，确保它们在输出中保持连续，
-        防止与其他检测器的输出交错。
-        
-        Args:
-            header: 块标题
-            items: 条目列表
-            detector: 检测器名称
-            cause_label: 原因标签（可选）
-        """
         lock: Optional[RLock] = getattr(self.analyzer, "lock", None)
 
         def _do_work() -> None:
-            self._add_result_internal(header, detector, cause_label, {})
+            self._add_result_internal(header, detector, cause_label, {}, confidence)
             for item in items:
-                try:
-                    self._add_result_internal(item, detector, None, {})
-                except Exception:
-                    pass
+                self._add_result_internal(item, detector, None, {})
 
         if lock:
             with lock:
