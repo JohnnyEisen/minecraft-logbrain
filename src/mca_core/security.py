@@ -1,7 +1,10 @@
 from __future__ import annotations
 import os
 from typing import Optional
+import logging
 from config.constants import MAX_LOG_LINE_LENGTH
+
+logger = logging.getLogger(__name__)
 
 
 class InputSanitizer:
@@ -80,10 +83,10 @@ class InputSanitizer:
         import urllib.parse
         try:
             parsed = urllib.parse.urlparse(url)
-            # 仅允许 http/https 方案
             if parsed.scheme not in ('http', 'https'):
                 return None
-            return url
+            cleaned = url.replace('\r', '').replace('\n', '').replace('\v', '')
+            return cleaned
         except Exception:
             return None
 
@@ -173,7 +176,7 @@ class ErrorSanitizer:
             message = message.replace(temp, '[临时目录]')
         
         # 移除 Python 内部路径
-        message = re.sub(r'File "[^"]+\\.py",', 'File "[文件]",', message)
+        message = re.sub(r'File "[^"]+[\\/][^"\\/]+\.py",', 'File "[文件]",', message)
         
         return message
     
@@ -543,7 +546,7 @@ class GitHubAutoRepair:
             return (True, f"文件不存在，已从 GitHub 下载")
         
         # 计算本地哈希
-        local_hash = self.compute_file_hash(local_path)
+        local_hash = IntegrityChecker().compute_file_hash(local_path)
         
         # 比较哈希
         if local_hash == remote_hash:

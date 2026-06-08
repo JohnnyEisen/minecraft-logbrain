@@ -19,7 +19,7 @@ if TYPE_CHECKING:
     from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
     from matplotlib.figure import Figure
 
-from mca_core.log_service import LogService
+from mca_core.services.log_service import LogService
 from mca_core.task_processor import (
     AnalysisHost,
     bootstrap_semantic_engine,
@@ -29,7 +29,7 @@ from mca_core.task_processor import (
     _RE_MISSING_MOD,
     _RE_MOD_REQUIRES,
 )
-PyQtAnalyzerHost = AnalysisHost
+PyQtAnalyzerHost = AnalysisHost  # type: ignore[assignment]
 from mca_core.diagnostic_engine import DiagnosticEngine
 from mca_core.result_ranker import rank_results, format_ranked_output
 
@@ -256,7 +256,7 @@ class AutoTestWorker(QThread):
     run_analysis: bool
     engine: Optional[DiagnosticEngine]
     signals: AutoTestSignals
-    _cancelled: bool
+    _cancel_event: threading.Event
 
     def __init__(
         self,
@@ -286,11 +286,11 @@ class AutoTestWorker(QThread):
         self.engine = engine
         self.run_analysis = run_analysis
         self.signals = AutoTestSignals()
-        self._cancelled = False
+        self._cancel_event = threading.Event()
 
     def cancel(self) -> None:
         """取消测试。"""
-        self._cancelled = True
+        self._cancel_event.set()
 
     def run(self) -> None:
         """执行自动化测试。"""
@@ -314,7 +314,7 @@ class AutoTestWorker(QThread):
                 count=self.count,
                 report_path=None,
                 progress_cb=None,
-                cancel_cb=lambda: self._cancelled,
+                cancel_cb=self._cancel_event.is_set,
             )
             if summary is None:
                 summary = []
@@ -328,7 +328,7 @@ class AutoTestWorker(QThread):
             analysis_results: list[dict[str, Any]] = []
 
             for idx, item in enumerate(summary, start=1):
-                if self._cancelled:
+                if self._cancel_event.is_set():
                     self.signals.log.emit("已请求停止，任务中止。")
                     break
                 fp = item.get("file", "")
