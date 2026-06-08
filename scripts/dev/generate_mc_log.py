@@ -3,35 +3,36 @@ import json
 import os
 import random
 import re
+import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Tuple
 
+# --- config ---
 try:
-    from tools.neural_adversary import NeuralAdversaryEngine
-    HAS_NEURAL_ENGINE = True
-except ImportError:
-    # Try local import if running directly e.g. from tools/
-    try:
-        # Add parent dir to path to find config
-        import sys
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        parent_dir = os.path.dirname(current_dir)
-        if parent_dir not in sys.path:
-            sys.path.insert(0, parent_dir)
-            
-        from config.constants import DEFAULT_MAX_BYTES
-        from neural_adversary import NeuralAdversaryEngine
-        HAS_NEURAL_ENGINE = True
-    except ImportError:
-        HAS_NEURAL_ENGINE = False
-        DEFAULT_MAX_BYTES = 8 * 1024 * 1024 # Fallback
-        print("[Warning] Scenario generator or config not found. Falling back to defaults.")
-
-try: 
     from config.constants import DEFAULT_MAX_BYTES
 except ImportError:
     DEFAULT_MAX_BYTES = 8 * 1024 * 1024
+
+# --- neural engine (optional) ---
+HAS_NEURAL_ENGINE = False
+NeuralAdversaryEngine = None
+
+try:
+    from tools.neural_adversary import NeuralAdversaryEngine as _NAE
+    NeuralAdversaryEngine = _NAE
+    HAS_NEURAL_ENGINE = True
+except ImportError:
+    try:
+        _dir = os.path.dirname(os.path.abspath(__file__))
+        _parent = os.path.dirname(_dir)
+        if _parent not in sys.path:
+            sys.path.insert(0, _parent)
+        from neural_adversary import NeuralAdversaryEngine as _NAE  # noqa: F811
+        NeuralAdversaryEngine = _NAE
+        HAS_NEURAL_ENGINE = True
+    except ImportError:
+        print("[Warning] NeuralAdversaryEngine not found. Adversarial fusion disabled.")
 
 SIZE_UNITS = {
     "b": 1,
