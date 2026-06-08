@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -504,6 +505,7 @@ class EventBus:
 # ============================================================
 
 _global_event_bus: Optional[EventBus] = None
+_event_bus_lock = threading.Lock()
 
 
 def get_event_bus() -> EventBus:
@@ -515,13 +517,16 @@ def get_event_bus() -> EventBus:
     """
     global _global_event_bus
     if _global_event_bus is None:
-        _global_event_bus = EventBus()
+        with _event_bus_lock:
+            if _global_event_bus is None:
+                _global_event_bus = EventBus()
     return _global_event_bus
 
 
 def reset_event_bus() -> None:
     """重置全局事件总线（仅用于测试）。"""
     global _global_event_bus
-    if _global_event_bus is not None:
-        _global_event_bus.clear()
-        _global_event_bus = None
+    with _event_bus_lock:
+        if _global_event_bus is not None:
+            _global_event_bus.clear()
+            _global_event_bus = None

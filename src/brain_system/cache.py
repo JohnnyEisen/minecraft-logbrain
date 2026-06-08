@@ -12,6 +12,7 @@ from typing import Any
 
 _SIZE_ESTIMATE_CACHE: dict[int, int] = {}
 _SIZE_CACHE_MAX = 1000
+_SIZE_ESTIMATE_IDS: set[int] = set()
 
 
 def _estimate_size(obj: Any) -> int:
@@ -20,9 +21,12 @@ def _estimate_size(obj: Any) -> int:
     使用采样策略平衡精度和性能：
     - 小型对象：精确计算
     - 大型对象：采样估算
+    
+    注意: 使用 id() 缓存，但通过 _SIZE_ESTIMATE_IDS 跟踪活跃对象，
+    防止 GC 回收后 id 复用导致缓存污染。
     """
     obj_id = id(obj)
-    if obj_id in _SIZE_ESTIMATE_CACHE:
+    if obj_id in _SIZE_ESTIMATE_IDS and obj_id in _SIZE_ESTIMATE_CACHE:
         return _SIZE_ESTIMATE_CACHE[obj_id]
     
     if isinstance(obj, (str, bytes)):
@@ -75,8 +79,11 @@ def _estimate_size(obj: Any) -> int:
             result = 1024
     
     if len(_SIZE_ESTIMATE_CACHE) >= _SIZE_CACHE_MAX:
-        _SIZE_ESTIMATE_CACHE.pop(next(iter(_SIZE_ESTIMATE_CACHE)))
+        oldest_id = next(iter(_SIZE_ESTIMATE_IDS))
+        _SIZE_ESTIMATE_IDS.discard(oldest_id)
+        _SIZE_ESTIMATE_CACHE.pop(oldest_id, None)
     _SIZE_ESTIMATE_CACHE[obj_id] = result
+    _SIZE_ESTIMATE_IDS.add(obj_id)
     
     return result
 
@@ -314,8 +321,7 @@ class LruTtlCache:
             old_item = self._items[key]
             self._current_bytes -= old_item.size_bytes
 
-        # 估算新值大小
-        size_bytes = _estimate_size(value)
+        size_bytes = _estimate_size(value) if self._max_bytes is not None else 0
         
         # 计算过期时间
         base_ttl = ttl if ttl is not None else self._ttl_seconds

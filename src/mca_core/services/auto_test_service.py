@@ -24,6 +24,7 @@ from config.constants import (
 from mca_core.security import InputSanitizer
 from mca_core.file_io import read_text_head
 from mca_core.threading_utils import submit_task
+from mca_core.scoring import CrashCauseScorer
 
 
 @dataclass
@@ -86,6 +87,17 @@ class AutoTestService:
         self._cancel_event = threading.Event()
         self._running = False
         self._last_summary: Optional[AutoTestSummary] = None
+
+        self._scorer = CrashCauseScorer()
+
+        self._scenario_cause_map = {
+            "oom": CAUSE_MEM,
+            "missing_dependency": CAUSE_DEP,
+            "version_conflict": CAUSE_VER,
+            "gl_error": CAUSE_GPU,
+            "mixin_conflict": CAUSE_OTHER,
+            "compound": CAUSE_OTHER,
+        }
         
         # 延迟导入，避免启动时依赖
         self._generate_batch = None
@@ -329,52 +341,22 @@ class AutoTestService:
         self._log(msg)
     
     def _score_result(self, scenario: str, result: Optional[Dict]) -> Tuple[bool, bool]:
-        """
-        评分分析结果。
-        
-        Args:
-            scenario: 场景名称
-            result: 分析结果字典
-            
-        Returns:
-            (hit, false_positive) 元组
-        """
+        """评分分析结果，使用统一的 CrashCauseScorer。"""
         if result is None:
             return False, False
-        
+
         texts = "\n".join(result.get("analysis_results", [])).lower()
         causes = result.get("cause_counts", {}) or {}
-        
-        indicators = {
-            "oom": ["outofmemory", "内存", "heap"],
-            "missing_dependency": ["missing mod", "missing or unsupported", "依赖", "requires", "缺失"],
-            "gl_error": ["opengl", "glfw", "gl ", "渲染"],
-            "mixin_conflict": ["mixin", "混入", "conflict", "incompatible"],
-            "version_conflict": ["版本", "version", "incompatible"],
-            "compound": ["outofmemory", "missing mod", "mixin", "opengl", "版本", "依赖"],
-        }
-        
-        cause_expect = {
-            "oom": CAUSE_MEM,
-            "missing_dependency": CAUSE_DEP,
-            "version_conflict": CAUSE_VER,
-            "gl_error": CAUSE_GPU,
-            "compound": CAUSE_OTHER,
-            "mixin_conflict": CAUSE_OTHER,
-        }
-        
+
         if scenario == "normal":
-            error_keywords = [
-                "outofmemory", "missing mod", "mixin", "opengl", "glfw", "版本", "依赖", "错误", "崩溃"
-            ]
+            error_keywords = self._scorer.get_error_keywords()
             false_positive = any(k in texts for k in error_keywords)
             if any(v > 0 for v in causes.values()):
                 false_positive = True
             return False, false_positive
-        
-        keys = indicators.get(scenario, [])
-        hit = any(k in texts for k in keys)
-        expected_cause = cause_expect.get(scenario)
+
+        expected_cause = self._scenario_cause_map.get(scenario)
+        hit = self._scorer.has_cause(texts, expected_cause) if expected_cause else False
         if expected_cause and causes.get(expected_cause, 0) > 0:
             hit = True
         return hit, False

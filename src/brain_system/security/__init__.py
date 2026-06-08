@@ -27,17 +27,39 @@ _logger = logging.getLogger(__name__)
 _SERIALIZATION_SECRET: bytes = b""
 _SERIALIZATION_SECRET_SET = False
 
+_MISSING_KEY_MSG = (
+    "\n[Security] 严重错误: MCA_SERIAL_SECRET 环境变量未设置。\n"
+    "序列化签名密钥是数据完整性保护的核心。\n"
+    "请在启动前设置环境变量:\n"
+    "  export MCA_SERIAL_SECRET='your-secure-random-key'\n"
+    "或调用 brain_system.security.set_serialization_secret()\n"
+)
+
+
 def set_serialization_secret(secret: bytes) -> None:
     """设置序列化签名密钥（启动时调用一次）"""
     global _SERIALIZATION_SECRET, _SERIALIZATION_SECRET_SET
     _SERIALIZATION_SECRET = secret
     _SERIALIZATION_SECRET_SET = True
 
+
 def _get_serialization_secret() -> bytes:
-    """获取序列化签名密钥"""
-    global _SERIALIZATION_SECRET
+    """获取序列化签名密钥。
+
+    C-001 修复: 移除硬编码默认密钥。
+    未配置时拒绝签名操作，防止弱密钥导致的数据伪造风险。
+    """
+    global _SERIALIZATION_SECRET, _SERIALIZATION_SECRET_SET
     if not _SERIALIZATION_SECRET_SET:
-        _SERIALIZATION_SECRET = os.environ.get("MCA_SERIAL_SECRET", "default-dev-key-change-in-prod").encode()
+        _SERIALIZATION_SECRET = os.environ.get("MCA_SERIAL_SECRET", "").encode()
+        if _SERIALIZATION_SECRET == b"":
+            import sys
+            print(_MISSING_KEY_MSG, file=sys.stderr)
+            raise RuntimeError(
+                "MCA_SERIAL_SECRET 环境变量未设置。"
+                "序列化签名密钥是必需的，不允许硬编码默认值。"
+            )
+        _SERIALIZATION_SECRET_SET = True
     return _SERIALIZATION_SECRET
 
 class UnsafeDeserializationError(RuntimeError):

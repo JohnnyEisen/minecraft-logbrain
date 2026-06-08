@@ -105,17 +105,26 @@ def mca_normalize_modid(
     cand = name.strip()
     if cand in mods_keys:
         return cand
+
     low = cand.lower()
-    for modid in mods_keys:
-        if modid.lower() == low:
-            return modid
-    for modid, disp in (mod_names or {}).items():
-        if disp and disp.lower() == low:
-            return modid
+
+    # 预计算 lowercase 查找表，避免逐次 .lower() 调用
+    key_lookup = {k.lower(): k for k in mods_keys}
+    matched = key_lookup.get(low)
+    if matched:
+        return matched
+
+    if mod_names:
+        disp_lookup = {d.lower(): mid for mid, d in mod_names.items() if d}
+        matched = disp_lookup.get(low)
+        if matched:
+            return matched
+
+    # Levenshtein: 使用已缓存的 lowercase 键，避免循环内重复 .lower()
     best: str | None = None
     best_score = 999
-    for modid in mods_keys:
-        dist = mca_levenshtein(low, modid.lower())
+    for low_key, modid in key_lookup.items():
+        dist = mca_levenshtein(low, low_key)
         if dist < best_score and dist <= 2:
             best_score = dist
             best = modid

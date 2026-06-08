@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import hashlib
 import json
 import logging
 import multiprocessing
 import os
 import re
+import threading
 import time
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from logging.handlers import RotatingFileHandler
@@ -18,7 +20,9 @@ from packaging.version import Version
 
 from .discovery import iter_dlc_files, load_dlc_classes_from_file
 from .dlc import BrainDLC
-from .models import DLCManifest
+from .models import DLCManifest, DLCState
+
+from brain_system import __version__
 
 from .cache import LruTtlCache
 from .observability import build_observability, start_span
@@ -43,9 +47,11 @@ def _invoke_callable(func: Callable[..., Any], args: tuple[Any, ...], kwargs: Di
 class BrainCore:
     """Core Scheduler: Task Dispatch + DLC Management + Observability."""
 
+    CORE_ALIASES: frozenset[str] = frozenset({"Brain Core", "BrainCore", "core"})
+
     def __init__(self, config_path: Optional[str] = None):
         self.name = "MCA Core Scheduler"
-        self.version = "1.5.0"
+        self.version = __version__
 
         self._config_path = config_path
         self.config = self._load_config(config_path)
@@ -62,7 +68,7 @@ class BrainCore:
 
         self.computational_units: Dict[str, Any] = {}
         self.result_cache = LruTtlCache(
-            max_entries=int(self.config.get("cache_max_entries", 10_000)),
+            max_entries=int(self.config.get("cache_max_entries", 2_000)),
             ttl_seconds=float(self.config.get("cache_ttl_seconds", 300.0)),
         )
 
@@ -77,19 +83,17 @@ class BrainCore:
         }
 
         self.monitor_task: Optional[asyncio.Task[None]] = None
-        self._last_valid_config: dict[str, Any] = {}
+        self._last_valid_config: dict[str, Any] = copy.deepcopy(self.config)
+        self._previous_valid_config: Optional[dict[str, Any]] = None
 
-        # 资源池（兼容 DLC 直接使用 thread_pool/process_pool 的写法）
-        # 默认线程池大小：min(CPU核心数 * 4, 32)，避免过度创建线程
-        default_thread_pool_size = min(multiprocessing.cpu_count() * 4, 32)
+        default_thread_pool_size = min(multiprocessing.cpu_count() * 2, 16)
         thread_pool_size = int(self.config.get("thread_pool_size", default_thread_pool_size))
         self.thread_pool = ThreadPoolExecutor(
             max_workers=thread_pool_size,
             thread_name_prefix="BrainWorker"
         )
         
-        # 进程池默认：min(CPU核心数, 8)，进程开销大
-        default_process_pool_size = min(multiprocessing.cpu_count(), 8)
+        default_process_pool_size = min(multiprocessing.cpu_count(), 4)
         process_pool_size = int(self.config.get("process_pool_size", default_process_pool_size))
         self.process_pool = ProcessPoolExecutor(max_workers=process_pool_size) if process_pool_size > 0 else None
         self._process_pool_max_workers = process_pool_size
@@ -178,7 +182,7 @@ class BrainCore:
 
         # 允许依赖声明指向核心本体（不是 DLC）。
         # 常见写法："Brain Core"。
-        core_aliases = {self.name, "Brain Core", "BrainCore", "core"}
+        core_aliases = self.CORE_ALIASES | {self.name}
         if name in core_aliases:
             if str(spec):
                 try:
@@ -289,63 +293,82 @@ class BrainCore:
             return
         
         # 备份当前配置以便回滚
-        old_config = dict(self.config)
+        old_config = copy.deepcopy(self.config)
 
         # 在完整候选配置上做验证，避免只校验 patch 带来的遗漏。
-        candidate_config = dict(self.config)
-        candidate_config.update(new_config)
+        candidate_config = copy.deepcopy(self.config)
+        candidate_config.update(copy.deepcopy(new_config))
         
         # 验证新配置
         validation_errors = self._validate_config(candidate_config)
         if validation_errors:
             logging.error("配置验证失败，拒绝更新: %s", validation_errors)
             return
-        
-        # 应用新配置
-        self.config = candidate_config
+
+        new_log_level = str(candidate_config.get("log_level", "INFO"))
+        new_cache_max = int(candidate_config.get("cache_max_entries", self.result_cache.max_entries))
+        new_cache_ttl = float(candidate_config.get("cache_ttl_seconds", self.result_cache.ttl_seconds))
 
         try:
-            self._set_log_level(str(self.config.get("log_level", "INFO")))
+            self._set_log_level(new_log_level)
         except Exception as e:
             logging.debug("Failed to set log level: %s", e)
 
         try:
-            self.result_cache.set_limits(
-                max_entries=int(self.config.get("cache_max_entries", self.result_cache.max_entries)),
-                ttl_seconds=float(self.config.get("cache_ttl_seconds", self.result_cache.ttl_seconds)),
-            )
+            self.result_cache.set_limits(max_entries=new_cache_max, ttl_seconds=new_cache_ttl)
         except Exception as e:
             logging.warning("Failed to update cache limits: %s", e)
 
         try:
-            # 保留断路器实例
             old_cb = getattr(self.retry_policy, 'circuit_breaker', None)
-            self.retry_policy = RetryPolicy(
-                max_attempts=int(self.config.get("retry_max_attempts", self.retry_policy.max_attempts)),
+            new_policy = RetryPolicy(
+                max_attempts=int(candidate_config.get("retry_max_attempts", self.retry_policy.max_attempts)),
                 initial_delay_seconds=float(
-                    self.config.get("retry_initial_delay_seconds", self.retry_policy.initial_delay_seconds)
+                    candidate_config.get("retry_initial_delay_seconds", self.retry_policy.initial_delay_seconds)
                 ),
-                max_delay_seconds=float(self.config.get("retry_max_delay_seconds", self.retry_policy.max_delay_seconds)),
+                max_delay_seconds=float(candidate_config.get("retry_max_delay_seconds", self.retry_policy.max_delay_seconds)),
                 backoff_multiplier=float(
-                    self.config.get("retry_backoff_multiplier", self.retry_policy.backoff_multiplier)
+                    candidate_config.get("retry_backoff_multiplier", self.retry_policy.backoff_multiplier)
                 ),
-                jitter_ratio=float(self.config.get("retry_jitter_ratio", self.retry_policy.jitter_ratio)),
+                jitter_ratio=float(candidate_config.get("retry_jitter_ratio", self.retry_policy.jitter_ratio)),
             )
-            # 恢复断路器
             if old_cb:
-                self.retry_policy.circuit_breaker = old_cb
+                new_policy.circuit_breaker = old_cb
         except Exception as e:
             logging.warning("Failed to update retry policy, rolling back: %s", e)
-            self.config = old_config
+            try:
+                self._set_log_level(str(old_config.get("log_level", "INFO")))
+            except Exception:
+                pass
+            try:
+                self.result_cache.set_limits(
+                    max_entries=int(old_config.get("cache_max_entries", self.result_cache.max_entries)),
+                    ttl_seconds=float(old_config.get("cache_ttl_seconds", self.result_cache.ttl_seconds)),
+                )
+            except Exception:
+                pass
             return
 
-        # 公钥可能变化
+        self.retry_policy = new_policy
+        self._previous_valid_config = old_config
+        self.config = candidate_config
+
         self._load_public_keys()
-        
-        # 保存有效配置以便回滚
-        self._last_valid_config = dict(self.config)
-        
+        self._last_valid_config = copy.deepcopy(self.config)
+
+        # 通知各 DLC 配置已变更
+        self._notify_dlcs_config_changed()
+
         logging.info("配置已热更新")
+
+    def _notify_dlcs_config_changed(self) -> None:
+        """通知所有已激活的 DLC 配置已变更。"""
+        for dlc in self.dlcs.values():
+            try:
+                if dlc.state in (DLCState.ACTIVE, DLCState.SUSPENDED):
+                    dlc.on_config_changed(dict(self.config))
+            except Exception as e:
+                logging.debug("DLC %s 配置更新通知失败: %s", dlc.manifest.name, e)
 
     def _validate_config(self, config: dict[str, Any]) -> list[str]:
         """验证配置参数。
@@ -372,11 +395,46 @@ class BrainCore:
         Returns:
             是否成功回滚。
         """
-        if hasattr(self, '_last_valid_config'):
-            self.config = dict(self._last_valid_config)
-            logging.info("配置已回滚")
-            return True
-        return False
+        previous = self._previous_valid_config
+        if not previous:
+            logging.info("无可回滚配置")
+            return False
+
+        current = copy.deepcopy(self.config)
+        target_config = copy.deepcopy(previous)
+
+        old_cb = getattr(self.retry_policy, "circuit_breaker", None)
+        restored_policy = RetryPolicy(
+            max_attempts=int(target_config.get("retry_max_attempts", self.retry_policy.max_attempts)),
+            initial_delay_seconds=float(
+                target_config.get("retry_initial_delay_seconds", self.retry_policy.initial_delay_seconds)
+            ),
+            max_delay_seconds=float(
+                target_config.get("retry_max_delay_seconds", self.retry_policy.max_delay_seconds)
+            ),
+            backoff_multiplier=float(
+                target_config.get("retry_backoff_multiplier", self.retry_policy.backoff_multiplier)
+            ),
+            jitter_ratio=float(target_config.get("retry_jitter_ratio", self.retry_policy.jitter_ratio)),
+            timeout_seconds=float(target_config.get("task_default_timeout", self.retry_policy.timeout_seconds)),
+        )
+        if old_cb:
+            restored_policy.circuit_breaker = old_cb
+
+        self._set_log_level(str(target_config.get("log_level", "INFO")))
+        self.result_cache.set_limits(
+            max_entries=int(target_config.get("cache_max_entries", self.result_cache.max_entries)),
+            ttl_seconds=float(target_config.get("cache_ttl_seconds", self.result_cache.ttl_seconds)),
+        )
+
+        self.retry_policy = restored_policy
+        self.config = target_config
+        self._load_public_keys()
+        self._last_valid_config = copy.deepcopy(self.config)
+        self._previous_valid_config = current
+
+        logging.info("配置已回滚")
+        return True
 
     def _build_leader_elector(self) -> Optional[LeaderElector]:
         if not bool(self.config.get("leader_election_enabled", False)):
@@ -400,15 +458,27 @@ class BrainCore:
         manifest = dlc.get_manifest()
 
         if bool(self.config.get("dlc_strict_dependency_check", True)):
+            core_aliases = self.CORE_ALIASES | {self.name}
             for dep in manifest.dependencies:
                 self._validate_dependency(dep)
+                dep_name, _ = self._parse_dependency(dep)
+                if dep_name and dep_name not in core_aliases:
+                    dep_dlc = self.dlcs.get(dep_name)
+                    if dep_dlc is None:
+                        raise RuntimeError(f"依赖 DLC 未加载: {dep_name}")
+                    if dep_dlc.state in (DLCState.FAILED, DLCState.UNLOADED):
+                        raise RuntimeError(f"依赖 DLC 未就绪: {dep_name} (state={dep_dlc.state.value})")
+
+        if manifest.name in self.dlcs:
+            logging.warning("DLC 已存在，将替换: %s", manifest.name)
+            self.unregister_dlc(manifest.name)
 
         self.dlcs[manifest.name] = dlc
         self.dlc_manifests[manifest.name] = manifest
         self.dlc_dependencies[manifest.name] = set(manifest.dependencies)
 
         dlc.initialize()
-        logging.info("已注册DLC: %s v%s", manifest.name, manifest.version)
+        logging.info("已注册DLC: %s v%s (state=%s)", manifest.name, manifest.version, dlc.state.value)
 
     def unregister_dlc(self, name: str) -> None:
         dlc = self.dlcs.pop(name, None)
@@ -419,6 +489,90 @@ class BrainCore:
                 dlc.shutdown()
             except Exception as e:
                 logging.warning("DLC shutdown failed for %s: %s", name, e)
+
+    def enable_dlc(self, name: str) -> bool:
+        """启用指定 DLC。
+
+        Args:
+            name: DLC 名称。
+
+        Returns:
+            是否成功启用。
+        """
+        dlc = self.dlcs.get(name)
+        if dlc is None:
+            logging.warning("DLC 不存在: %s", name)
+            return False
+        try:
+            dlc.enable()
+            logging.info("DLC 已启用: %s (state=%s)", name, dlc.state.value)
+            return True
+        except Exception as e:
+            logging.error("启用 DLC 失败 %s: %s", name, e)
+            return False
+
+    def disable_dlc(self, name: str) -> bool:
+        """禁用指定 DLC。
+
+        Args:
+            name: DLC 名称。
+
+        Returns:
+            是否成功禁用。
+        """
+        dlc = self.dlcs.get(name)
+        if dlc is None:
+            logging.warning("DLC 不存在: %s", name)
+            return False
+        try:
+            dlc.disable()
+            logging.info("DLC 已禁用: %s (state=%s)", name, dlc.state.value)
+            return True
+        except Exception as e:
+            logging.error("禁用 DLC 失败 %s: %s", name, e)
+            return False
+
+    def suspend_dlc(self, name: str) -> bool:
+        """挂起指定 DLC。
+
+        Args:
+            name: DLC 名称。
+
+        Returns:
+            是否成功挂起。
+        """
+        dlc = self.dlcs.get(name)
+        if dlc is None:
+            logging.warning("DLC 不存在: %s", name)
+            return False
+        try:
+            dlc.suspend()
+            logging.info("DLC 已挂起: %s (state=%s)", name, dlc.state.value)
+            return True
+        except Exception as e:
+            logging.error("挂起 DLC 失败 %s: %s", name, e)
+            return False
+
+    def resume_dlc(self, name: str) -> bool:
+        """恢复挂起的 DLC。
+
+        Args:
+            name: DLC 名称。
+
+        Returns:
+            是否成功恢复。
+        """
+        dlc = self.dlcs.get(name)
+        if dlc is None:
+            logging.warning("DLC 不存在: %s", name)
+            return False
+        try:
+            dlc.resume()
+            logging.info("DLC 已恢复: %s (state=%s)", name, dlc.state.value)
+            return True
+        except Exception as e:
+            logging.error("恢复 DLC 失败 %s: %s", name, e)
+            return False
 
     def reload_dlc_file(self, dlc_path: str) -> tuple[int, bool]:
         """热升级：卸载同名 DLC，再加载新版本，支持回滚。
@@ -538,12 +692,59 @@ class BrainCore:
                 logging.debug("Failed to increment dlc_loaded metric: %s", e)
         return count
 
+    def _topological_sort(
+        self, graph: dict[str, list[str]], priority_map: dict[str, int] | None = None
+    ) -> list[str] | None:
+        """对 DLC 依赖图进行拓扑排序（Kahn 算法）。
+
+        Args:
+            graph: DLC 名称到其依赖名称列表的映射。graph[name] = [dep1, dep2, ...]
+            priority_map: 可选的 DLC 优先级映射（值越小越先加载），用于同层级排序。
+
+        Returns:
+            排序后的 DLC 名称列表，或 None（存在循环依赖时）。
+        """
+        from collections import deque
+
+        reverse_graph: dict[str, list[str]] = {name: [] for name in graph}
+        in_degree: dict[str, int] = {}
+
+        for name, deps in graph.items():
+            resolved_deps = [d for d in deps if d in graph]
+            in_degree[name] = len(resolved_deps)
+            for dep in resolved_deps:
+                reverse_graph[dep].append(name)
+
+        queue: deque[str] = deque()
+        for name in graph:
+            if in_degree[name] == 0:
+                queue.append(name)
+
+        sorted_result: list[str] = []
+        pmap = priority_map or {}
+
+        while queue:
+            queue = deque(sorted(queue, key=lambda n: (pmap.get(n, 0), n)))
+            current = queue.popleft()
+            sorted_result.append(current)
+
+            for dependent in reverse_graph[current]:
+                in_degree[dependent] -= 1
+                if in_degree[dependent] == 0:
+                    queue.append(dependent)
+
+        if len(sorted_result) != len(graph):
+            remaining = set(graph) - set(sorted_result)
+            logging.warning("检测到循环依赖: %s", remaining)
+            return None
+
+        return sorted_result
+
     def load_all_dlcs(self, search_paths: Optional[list[str]] = None) -> int:
         """从搜索路径加载 DLC。
 
-        生产行为：
-        - 尝试按 manifest.priority 升序注册
-        - 多轮注册以解决依赖顺序问题
+        使用拓扑排序确保依赖 DLC 先于被依赖 DLC 加载。
+        每个 DLC 类只实例化一次，避免重复创建。
         """
 
         paths = search_paths or list(self.config.get("dlc_search_paths", ["./dlcs"]))
@@ -556,57 +757,61 @@ class BrainCore:
         except Exception as e:
             logging.debug("Path.is_relative_to not available (Python < 3.9?): %s", e)
 
-        candidates: list[type[BrainDLC]] = []
+        # 第一阶段：发现所有 DLC 文件，收集候选类
+        pending_cls: list[type[BrainDLC]] = []
         for file_path in dlc_files:
-            # 安全：exec 之前必须验签
             if not self._verify_dlc_file_signature(file_path):
                 continue
             try:
                 classes = load_dlc_classes_from_file(file_path)
-                candidates.extend(classes)
+                pending_cls.extend(classes)
             except Exception as e:
                 logging.error("读取 DLC 类失败 %s: %s", file_path, e)
 
-        # 读取 manifest.priority 进行排序（实例化不会 initialize）
-        scored: list[tuple[int, type[BrainDLC]]] = []
-        for cls in candidates:
+        # 第二阶段：解析 manifest，构建依赖图和名称→类映射
+        graph: dict[str, list[str]] = {}
+        priority_map: dict[str, int] = {}
+        name_to_cls: dict[str, type[BrainDLC]] = {}
+        core_aliases = self.CORE_ALIASES | {self.name}
+
+        for cls in pending_cls:
             try:
-                inst = cls(self)
-                scored.append((int(inst.get_manifest().priority), cls))
-            except Exception:
-                continue
+                temp_inst = cls(self)
+                manifest = temp_inst.get_manifest()
+                name = manifest.name
+                priority_map[name] = int(manifest.priority)
 
-        scored.sort(key=lambda x: x[0])
-        pending = [c for _, c in scored]
+                deps: list[str] = []
+                for dep_raw in manifest.dependencies:
+                    dep_name, _ = self._parse_dependency(dep_raw)
+                    if dep_name and dep_name not in core_aliases:
+                        deps.append(dep_name)
 
+                graph[name] = deps
+                name_to_cls[name] = cls
+            except Exception as e:
+                logging.debug("解析 DLC 清单失败 %s: %s", getattr(cls, "__name__", str(cls)), e)
+
+        # 第三阶段：拓扑排序
+        sorted_names = self._topological_sort(graph, priority_map)
+        if sorted_names is None:
+            logging.error("DLC 依赖图存在循环依赖，无法加载")
+            return 0
+
+        # 第四阶段：按排序顺序注册（每个类只实例化一次）
         loaded = 0
-        progressed = True
-        while pending and progressed:
-            progressed = False
-            next_pending: list[type[BrainDLC]] = []
-            for cls in pending:
-                try:
-                    inst = cls(self)
-                    # allow_replace=False：避免静默替换，热升级用 reload_dlc_file
-                    self.register_dlc(inst)
-                    loaded += 1
-                    progressed = True
-                except Exception as e:
-                    next_pending.append(cls)
-                    logging.debug("DLC 延迟注册 %s: %s", getattr(cls, "__name__", str(cls)), e)
-            pending = next_pending
-
-        # 如果仍有 pending，输出明确错误
-        for cls in pending:
+        for name in sorted_names:
+            cls = name_to_cls.get(name)
+            if cls is None:
+                continue
             try:
-                name = getattr(cls, "__name__", str(cls))
                 inst = cls(self)
-                manifest = inst.get_manifest()
-                logging.error("DLC 注册失败(依赖未满足或版本冲突): %s deps=%s", name, manifest.dependencies)
-            except Exception:
-                logging.error("DLC 注册失败(无法解析 manifest): %s", getattr(cls, "__name__", str(cls)))
+                self.register_dlc(inst)
+                loaded += 1
+            except Exception as e:
+                logging.error("DLC 注册失败 %s: %s", name, e)
 
-        logging.info("已加载 %d 个DLC类（来自 %d 个文件）", loaded, len(dlc_files))
+        logging.info("已加载 %d 个DLC（来自 %d 个文件）", loaded, len(dlc_files))
         return loaded
 
     def get_dlc_status(self) -> Dict[str, Any]:
@@ -616,7 +821,8 @@ class BrainCore:
             status[name] = {
                 "version": manifest.version,
                 "type": manifest.dlc_type.value,
-                "enabled": manifest.enabled,
+                "enabled": dlc.enabled,
+                "state": dlc.state.value,
                 "dependencies": list(self.dlc_dependencies[name]),
                 "initialized": bool(getattr(dlc, "_initialized", False)),
             }
@@ -830,7 +1036,7 @@ class BrainCore:
         if priority <= -1 and process_available and is_cpu_hint and not is_io_hint:
             return "process"
 
-        if strategy == "legacy" or strategy == "latency":
+        if strategy == "latency":
             return "thread"
 
         if strategy == "throughput":
@@ -842,27 +1048,12 @@ class BrainCore:
         # CPU tasks route to process pool only in "throughput" mode (explicit opt-in).
         return "thread"
 
-    _cache_key_cache: dict[int, str] = {}
-    _cache_key_cache_max_size: int = 1000
-
     def _generate_cache_key(self, func: Callable[..., Any], *args: Any, **kwargs: Any) -> str:
         func_name = getattr(func, "__name__", str(func))
         
         try:
-            key_repr = repr((func_name, args, kwargs))
-            cache_key_hash = hash(key_repr)
-            
-            if cache_key_hash in self._cache_key_cache:
-                return self._cache_key_cache[cache_key_hash]
-            
-            key_str = f"{func_name}:{key_repr}"
-            result = hashlib.sha256(key_str.encode("utf-8")).hexdigest()
-            
-            if len(self._cache_key_cache) >= self._cache_key_cache_max_size:
-                oldest_key = next(iter(self._cache_key_cache))
-                del self._cache_key_cache[oldest_key]
-            
-            self._cache_key_cache[cache_key_hash] = result
+            key_repr = f"{func_name}:{args}:{kwargs}"
+            result = hashlib.sha256(key_repr.encode("utf-8")).hexdigest()
             return result
         except Exception:
             key_data = (func_name, args, kwargs)
@@ -879,7 +1070,7 @@ class BrainCore:
 
         async def monitor() -> None:
             while True:
-                await asyncio.sleep(float(self.config.get("monitoring_interval", 5.0)))
+                await asyncio.sleep(float(self.config.get("monitoring_interval", 15.0)))
 
                 if psutil is not None:
                     try:
@@ -924,13 +1115,19 @@ class BrainCore:
         dlc_issues = []
         for name, dlc in self.dlcs.items():
             try:
+                state_ok = dlc.state not in (DLCState.FAILED, DLCState.DISABLED, DLCState.UNLOADED)
                 initialized = bool(getattr(dlc, "_initialized", False))
                 health["components"][f"dlc:{name}"] = {
-                    "status": "ok" if initialized else "not_initialized",
+                    "status": "ok" if state_ok and initialized else "degraded",
+                    "state": dlc.state.value,
                     "initialized": initialized,
                 }
-                if not initialized:
+                if dlc.state == DLCState.FAILED:
+                    dlc_issues.append(f"DLC {name} is in FAILED state")
+                elif not initialized:
                     dlc_issues.append(f"DLC {name} not initialized")
+                elif dlc.state == DLCState.DISABLED:
+                    dlc_issues.append(f"DLC {name} is disabled")
             except Exception as e:
                 health["components"][f"dlc:{name}"] = {"status": "error", "error": str(e)}
                 dlc_issues.append(f"DLC {name} error: {e}")
@@ -940,7 +1137,7 @@ class BrainCore:
 
         # 检查线程池状态
         try:
-            thread_pool_ok = self.thread_pool is not None and not self.thread_pool._shutdown
+            thread_pool_ok = self.thread_pool is not None and not getattr(self.thread_pool, '_shutdown', False)
             health["components"]["thread_pool"] = {
                 "status": "ok" if thread_pool_ok else "error",
                 "max_workers": self.thread_pool._max_workers if self.thread_pool else 0,
@@ -1003,7 +1200,6 @@ class BrainCore:
             "avg_compute_time": round(self.performance_stats.get("avg_compute_time", 0.0), 4),
             "memory_usage_mb": round(self.performance_stats.get("memory_usage", 0.0), 2),
             "cpu_usage_percent": round(self.performance_stats.get("cpu_usage", 0.0), 2),
-            "dlc_count": len(self.dlcs),
         }
 
         # 慢任务统计
@@ -1044,7 +1240,7 @@ class BrainCore:
         reasons: list[str] = []
 
         # 检查线程池
-        if self.thread_pool is None or self.thread_pool._shutdown:
+        if self.thread_pool is None or getattr(self.thread_pool, '_shutdown', False):
             ready = False
             reasons.append("Thread pool not ready")
 
@@ -1061,7 +1257,6 @@ class BrainCore:
         return {
             "ready": ready,
             "reasons": reasons,
-            "dlc_count": len(self.dlcs),
         }
 
     async def shutdown(self) -> None:

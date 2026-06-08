@@ -100,35 +100,21 @@ class LogService:
     _invalidate_log_cache = _clear_cache
 
     def get_text(self) -> str:
-        """
-        获取原始日志文本。
-        
-        Returns:
-            原始日志文本
-        """
+        if self._crash_log is None and self._cache_lines is not None:
+            self._crash_log = "\n".join(self._cache_lines)
         return self._crash_log
 
     def append_line(self, line: str) -> None:
-        """
-        高效追加日志行，防止 O(n²) 字符串复制。
-        
-        使用行缓冲池，定期合并，避免每次追加都重建完整字符串。
-        
-        Args:
-            line: 要追加的日志行
-        """
         if self._cache_lines is None:
             self._cache_lines = self._crash_log.splitlines() if self._crash_log else []
         
         self._cache_lines.append(line)
         self._cache_type = self.CACHE_LINES
         self._cache_lower = None
+        self._crash_log = None
         
         if len(self._cache_lines) > _TAIL_BUFFER_MAX_LINES:
-            self._crash_log = "\n".join(self._cache_lines[-_TAIL_BUFFER_MAX_LINES // 2:])
-            self._cache_lines = self._crash_log.splitlines()
-        
-        self._crash_log = "\n".join(self._cache_lines)
+            self._cache_lines = self._cache_lines[-_TAIL_BUFFER_MAX_LINES // 2:]
 
     def get_lower(self) -> str:
         """
@@ -159,21 +145,20 @@ class LogService:
         """
         target_type = self.CACHE_LINES if not lower else self.CACHE_LOWER
 
-        if self._cache_type != target_type or self._cache_lines is None:
-            if lower:
-                self._cache_lines = None
-                self._cache_lower = self._crash_log.lower()
-                self._cache_type = self.CACHE_LOWER
+        if target_type == self.CACHE_LOWER:
+            if self._cache_type == self.CACHE_LOWER and self._cache_lower is not None:
                 return self._cache_lower.splitlines()
-            else:
-                self._cache_lower = None
-                self._cache_lines = self._crash_log.splitlines()
-                self._cache_type = self.CACHE_LINES
-                return self._cache_lines
-
-        if lower and self._cache_lower:
+            self._cache_lines = None
+            self._cache_lower = self._crash_log.lower()
+            self._cache_type = self.CACHE_LOWER
             return self._cache_lower.splitlines()
-        return self._cache_lines or []
+        else:
+            if self._cache_type == self.CACHE_LINES and self._cache_lines is not None:
+                return self._cache_lines
+            self._cache_lower = None
+            self._cache_lines = self._crash_log.splitlines()
+            self._cache_type = self.CACHE_LINES
+            return self._cache_lines
 
     def iter_lines(self, lower: bool = False) -> Iterator[str]:
         """
@@ -187,10 +172,10 @@ class LogService:
             
         Note:
             适用于大文件场景，避免一次性创建完整行列表。
+            小写模式逐行转换，不产生完整副本。
         """
-        source = self._crash_log.lower() if lower else self._crash_log
-        for line in source.splitlines():
-            yield line
+        for line in self._crash_log.splitlines():
+            yield line.lower() if lower else line
 
     def get_memory_usage(self) -> dict[str, int | bool | str]:
         """

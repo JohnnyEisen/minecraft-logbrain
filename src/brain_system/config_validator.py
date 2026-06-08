@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 
 AUTOTUNE_PROFILES = {"manual", "auto", "small_core", "large_core"}
-ROUTING_STRATEGIES = {"balanced", "throughput", "latency", "legacy"}
+ROUTING_STRATEGIES = {"balanced", "throughput", "latency"}
 SMALL_CORE_CPU_THRESHOLD = 8
 
 
@@ -358,7 +358,7 @@ class ConfigValidator:
             val = str(config["executor_routing_strategy"]).lower()
             if val not in ROUTING_STRATEGIES:
                 self._errors.append(
-                    f"executor_routing_strategy must be one of ('balanced', 'throughput', 'latency', 'legacy'), got {config['executor_routing_strategy']}"
+                    f"executor_routing_strategy must be one of ('balanced', 'throughput', 'latency'), got {config['executor_routing_strategy']}"
                 )
 
         for strategy_key in [
@@ -369,7 +369,7 @@ class ConfigValidator:
                 val = str(config[strategy_key]).lower()
                 if val not in ROUTING_STRATEGIES:
                     self._errors.append(
-                        f"{strategy_key} must be one of ('balanced', 'throughput', 'latency', 'legacy'), got {config[strategy_key]}"
+                        f"{strategy_key} must be one of ('balanced', 'throughput', 'latency'), got {config[strategy_key]}"
                     )
 
         if "cpu_task_prefixes" in config and not isinstance(config["cpu_task_prefixes"], list):

@@ -1,4 +1,7 @@
-"""Hardware Accelerator DLC: 真实管理 GPU/CPU 资源，优先使用 CuPy。"""
+"""Hardware Accelerator DLC: 真实管理 GPU/CPU 资源，优先使用 CuPy。
+
+v1.5.5: DI 集成 (config/audit)，版本号统一引用 __version__。
+"""
 from __future__ import annotations
 
 import logging
@@ -9,6 +12,7 @@ from typing import Any, Dict, List, Optional
 import asyncio
 
 from brain_system import BrainCore, BrainDLC, BrainDLCType, DLCManifest
+from brain_system import __version__
 from brain_system.utils import optional_import, require_optional, Device, CPUDevice
 
 # 导入可选依赖
@@ -49,7 +53,7 @@ class HardwareAcceleratorDLC(BrainDLC):
     def get_manifest(self) -> DLCManifest:
         return DLCManifest(
             name="Hardware Accelerator",
-            version="1.1.0",
+            version=__version__,
             author="Brain AI Systems",
             description="支持GPU/CPU硬件加速，自动检测 CuPy/Numpy 环境",
             dlc_type=BrainDLCType.PROCESSOR,
@@ -60,18 +64,16 @@ class HardwareAcceleratorDLC(BrainDLC):
     def _initialize(self):
         self.available_devices: Dict[str, Dict[str, Any]] = self._detect_hardware()
         self.device_objects: Dict[str, Device] = {}
-        
-        # 预加载 NumPy
+
         self.np = require_optional(optional_import("numpy"), "numpy", "请安装 numpy")
 
         self._init_devices_real()
-        self._start_monitor()
+        self._stop_event = threading.Event()
         logging.info(f"硬件加速加载完毕，可用设备: {list(self.available_devices.keys())}")
 
-    def shutdown(self):
+    def _pre_shutdown(self):
         if hasattr(self, "_stop_event"):
             self._stop_event.set()
-        # 清理引用，辅助 GC
         self.device_objects.clear()
 
     def provide_computational_units(self) -> Dict[str, Any]:
@@ -207,7 +209,4 @@ class HardwareAcceleratorDLC(BrainDLC):
             return psutil.virtual_memory().total / (1024**3)
         return 0.0
 
-    def _start_monitor(self):
-        self._stop_event = threading.Event()
-        # 简单起见，不在此处做重型轮询（Monitoring 模块已负责）
-        pass
+    

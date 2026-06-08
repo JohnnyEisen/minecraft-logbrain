@@ -11,6 +11,8 @@ import threading
 from datetime import datetime
 
 from config.constants import AI_SEMANTIC_LIMIT
+from mca_core.scoring import CrashCauseScorer
+from mca_core.data_augmentation import augment_crash_log
 
 MAX_PATTERNS = 500
 MAX_EMBEDDINGS = 100
@@ -37,7 +39,8 @@ _RE_JAVA_VERSION = re.compile(r"java\s*(?:version|runtime)?[:\s]*([0-9]+(?:\.[0-
 _RE_MEMORY = re.compile(r"(?:allocated|memory|heap)[:\s]*([0-9]+)\s*(?:mb|gb|mib|gib)?", re.IGNORECASE)
 _RE_ERROR_CODE = re.compile(r"(?:error|err|exception)[:\s]*([A-Z0-9_]{3,})", re.IGNORECASE)
 _RE_THREAD_NAME = re.compile(r"\[(\w+(?:-\d+)?)\]/", re.MULTILINE)
-_RE_CLASS_NAME = re.compile(r"([a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+)\.[A-Z][a-zA-Z0-9_]*")
+# VULN-011 修复: 添加 {1,10} 上限防止 ReDoS 嵌套量词回溯
+_RE_CLASS_NAME = re.compile(r"([a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*){1,10})\.[A-Z][a-zA-Z0-9_]*")
 
 _CRITICAL_PATTERNS = [
     (re.compile(r"missing (?:mod|dependency|requirement)"), "missing_dep"),
@@ -99,6 +102,8 @@ class CrashPatternLearner:
         self.semantic_comparator = None
         self._store_embeddings = True
         self._pattern_index: dict[str, int] = {}
+        self.scorer = CrashCauseScorer()
+        self.cross_encoder_reranker = None  # 由应用初始化组件注入
         self._rebuild_index()
 
     def _rebuild_index(self) -> None:
@@ -127,6 +132,10 @@ class CrashPatternLearner:
     def set_semantic_engine(self, encoder: Any, comparator: Any) -> None:
         self.semantic_encoder = encoder
         self.semantic_comparator = comparator
+
+    def set_cross_encoder(self, reranker: Any) -> None:
+        """设置 Cross-Encoder 重排序函数。"""
+        self.cross_encoder_reranker = reranker
 
     def set_store_embeddings(self, enabled: bool) -> None:
         self._store_embeddings = enabled
@@ -318,13 +327,11 @@ class CrashPatternLearner:
         vector: list[float] | None = None
     ) -> tuple[dict[str, Any] | None, float]:
         with self._lock:
-            best_score = 0.0
-            best_match = None
-
             query_features_set = set(features)
             if not query_features_set:
                 return None, 0.0
 
+            # 快速精确匹配
             quick_key = self._compute_pattern_key(features)
             if quick_key and quick_key in self._pattern_index:
                 idx = self._pattern_index[quick_key]
@@ -333,6 +340,9 @@ class CrashPatternLearner:
                 base_score = self._calculate_similarity(query_features_set, stored_fs)
                 if base_score > 0.8:
                     return p, base_score
+
+            # 收集 top-3 候选（用于 Cross-Encoder 重排序）
+            top_candidates: list[tuple[dict[str, Any], float]] = []
 
             for p in self._patterns:
                 stored_fs = self._get_feature_set(p)
@@ -344,11 +354,34 @@ class CrashPatternLearner:
                     sem_score = self.semantic_comparator(vector, stored_vector)
                     final_score = (base_score * 0.4) + (sem_score * 0.6)
 
-                if final_score > best_score:
-                    best_score = final_score
-                    best_match = p
+                if final_score > 0.01:
+                    top_candidates.append((p, final_score))
 
-            return best_match, best_score
+            if not top_candidates:
+                return None, 0.0
+
+            # 按分数排序，保留 top-3
+            top_candidates.sort(key=lambda x: x[1], reverse=True)
+            top_candidates = top_candidates[:3]
+
+            # Cross-Encoder 重排序：对 top-3 进行精细比较
+            if len(top_candidates) > 1 and self.cross_encoder_reranker is not None:
+                try:
+                    # 从最佳匹配的模式中提取结果文本作为候选
+                    query_text = "\n".join(features)
+                    candidate_texts = [
+                        "\n".join(p.get("result", p.get("features", [])))
+                        for p, _ in top_candidates
+                    ]
+                    reranked = self.cross_encoder_reranker(query_text, candidate_texts, top_k=1)
+                    if reranked:
+                        best_idx = reranked[0][0]
+                        if best_idx < len(top_candidates):
+                            return top_candidates[best_idx][0], top_candidates[best_idx][1]
+                except Exception:
+                    pass
+
+            return top_candidates[0][0], top_candidates[0][1]
 
     def get_pattern_count(self) -> int:
         with self._lock:
@@ -401,6 +434,40 @@ class CrashPatternLearner:
                 self._patterns.append(new_pattern)
                 self._rebuild_index()
 
+            # 数据增强：为新学习到的模式生成变体，提升泛化能力
+            if not match or match.get("hit_count", 0) <= 1:
+                variants = augment_crash_log(crash_log, num_variants=2)
+                for variant in variants:
+                    variant_features = self._extract_features(variant)
+                    if not variant_features or len(variant_features) < 2:
+                        continue
+                    variant_key = self._compute_pattern_key(variant_features)
+                    if variant_key and variant_key in self._pattern_index:
+                        self._patterns[self._pattern_index[variant_key]]["hit_count"] += 1
+                        continue
+                    variant_pattern: dict[str, Any] = {
+                        "features": variant_features,
+                        "_feature_set": set(variant_features),
+                        "result": analysis_result,
+                        "hit_count": 0,
+                        "created": datetime.now().isoformat(),
+                        "last_hit": datetime.now().isoformat(),
+                        "_augmented": True,
+                    }
+                    if self.semantic_encoder and self._store_embeddings:
+                        try:
+                            variant_vector = self.semantic_encoder(variant[:AI_SEMANTIC_LIMIT])
+                            if variant_vector:
+                                variant_pattern["embedding"] = variant_vector
+                        except Exception:
+                            pass
+                    self._patterns.append(variant_pattern)
+                if variants:
+                    self._rebuild_index()
+                    logging.getLogger(__name__).debug(
+                        f"数据增强: 从 1 条日志生成了 {len(variants)} 条变体"
+                    )
+
             self._prune_patterns()
             if _save:
                 self._save_patterns()
@@ -410,7 +477,7 @@ class CrashPatternLearner:
 
     def suggest_solutions(self, crash_log: str) -> list[Solution]:
         if not self._patterns:
-            return []
+            return self._scorer_suggestions(crash_log)
 
         features = self._extract_features(crash_log)
 
@@ -469,7 +536,20 @@ class CrashPatternLearner:
                     confidence=score
                 )]
 
-        return []
+        return self._scorer_suggestions(crash_log)
+
+    def _scorer_suggestions(self, crash_log: str) -> list[Solution]:
+        """使用统一评分器提供基础建议（无模式匹配时回退）。"""
+        top_causes = self.scorer.get_top_causes(crash_log, top_n=2)
+        if not top_causes:
+            return []
+        cause_text = "\n".join(
+            f" - {cause} (置信度: {score:.0%})" for cause, score in top_causes
+        )
+        return [Solution(
+            text=f"[规则匹配] 检测到可能的崩溃原因:\n{cause_text}",
+            confidence=max(s for _, s in top_causes)
+        )]
 
     def batch_learn(self, crash_data: list[tuple[str, list[str]]]) -> int:
         learned = 0

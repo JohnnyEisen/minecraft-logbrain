@@ -35,7 +35,7 @@ class ThreadSafeState:
         with self._lock:
             old = self._data.get(key)
             self._data[key] = value
-            self._notify(key, old, value)
+        self._notify(key, old, value)
 
     def get(self, key: str, default: Any = None) -> Any:
         """获取状态值。

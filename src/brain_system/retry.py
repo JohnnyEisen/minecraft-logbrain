@@ -73,7 +73,7 @@ class CircuitBreaker:
                 return True
             
             if self._state == CircuitState.OPEN:
-                elapsed = time.time() - self._last_failure_time
+                elapsed = time.monotonic() - self._last_failure_time
                 if elapsed >= self.recovery_timeout:
                     self._state = CircuitState.HALF_OPEN
                     self._successes = 0
@@ -100,7 +100,7 @@ class CircuitBreaker:
         """记录失败调用。"""
         async with self._lock:
             self._failures += 1
-            self._last_failure_time = time.time()
+            self._last_failure_time = time.monotonic()
             
             if self._state == CircuitState.HALF_OPEN:
                 self._state = CircuitState.OPEN
@@ -224,10 +224,14 @@ async def async_retry(
             if cb is not None:
                 await cb.record_failure()
             if attempt >= policy.max_attempts:
-                raise TimeoutError(
+                raise asyncio.TimeoutError(
                     f"Task timed out after {policy.timeout_seconds}s"
                 ) from exc
-            
+
+        except asyncio.CancelledError:
+            # 取消是控制流信号，不应计入重试失败或断路器失败计数
+            raise
+
         except BaseException as exc:
             if cb is not None:
                 await cb.record_failure()
@@ -272,8 +276,7 @@ class RetryBudget:
             是否允许重试。
         """
         async with self._lock:
-            now = time.time()
-            # 清理超过1秒的记录
+            now = time.monotonic()
             self._retry_times = [t for t in self._retry_times if now - t < 1.0]
             
             if len(self._retry_times) >= self._max_retries_per_second:
@@ -282,8 +285,9 @@ class RetryBudget:
             self._retry_times.append(now)
             return True
     
-    def get_current_rate(self) -> float:
+    async def get_current_rate(self) -> float:
         """获取当前重试速率（次/秒）。"""
-        now = time.time()
-        recent = [t for t in self._retry_times if now - t < 1.0]
-        return float(len(recent))
+        async with self._lock:
+            now = time.monotonic()
+            recent = [t for t in self._retry_times if now - t < 1.0]
+            return float(len(recent))

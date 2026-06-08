@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import importlib
 import importlib.util
 import inspect
+import pkgutil
 import sys
 from pathlib import Path
 from typing import Iterable, List, Optional, Sequence, Type
@@ -31,6 +33,57 @@ def load_dlc_classes_from_file(file_path: Path) -> List[Type[BrainDLC]]:
     sys.modules[module.__name__] = module
     spec.loader.exec_module(module)
 
+    return _extract_dlc_classes(module)
+
+
+def load_dlc_classes_from_module(module_name: str) -> List[Type[BrainDLC]]:
+    """从已安装的 Python 模块中加载 DLC 子类。
+
+    Args:
+        module_name: 模块全限定名（如 ``dlcs.brain_dlc_distributed``）。
+
+    Returns:
+        BrainDLC 子类列表。
+    """
+    try:
+        module = importlib.import_module(module_name)
+        return _extract_dlc_classes(module)
+    except Exception:
+        return []
+
+
+def discover_dlc_classes_from_package(package_name: str) -> List[Type[BrainDLC]]:
+    """从 Python 包中递归发现所有 DLC 子类。
+
+    Args:
+        package_name: 包名（如 ``dlcs``）。
+
+    Returns:
+        BrainDLC 子类列表。
+    """
+    classes: List[Type[BrainDLC]] = []
+    try:
+        package = importlib.import_module(package_name)
+        if not hasattr(package, "__path__"):
+            return []
+
+        for _, module_name, is_pkg in pkgutil.walk_packages(
+            package.__path__, prefix=package_name + "."
+        ):
+            if is_pkg:
+                continue
+            try:
+                module = importlib.import_module(module_name)
+                classes.extend(_extract_dlc_classes(module))
+            except Exception:
+                continue
+    except Exception:
+        return []
+    return classes
+
+
+def _extract_dlc_classes(module) -> List[Type[BrainDLC]]:
+    """从模块中提取 BrainDLC 子类。"""
     classes: List[Type[BrainDLC]] = []
     for _, obj in vars(module).items():
         if inspect.isclass(obj) and issubclass(obj, BrainDLC) and obj is not BrainDLC:

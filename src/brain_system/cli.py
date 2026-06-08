@@ -47,12 +47,6 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_ui(args: argparse.Namespace) -> int:
-    from .ui import run_ui
-
-    return int(run_ui(config_path=args.config))
-
-
 def _cmd_train(args: argparse.Namespace) -> int:
     import json
 
@@ -110,9 +104,6 @@ def main(argv: Optional[list[str]] = None) -> int:
     p_serve.add_argument("--host", default="127.0.0.1")
     p_serve.add_argument("--port", type=int, default=8000)
     p_serve.set_defaults(func=_cmd_serve)
-
-    p_ui = sub.add_parser("ui", help="Start desktop UI (Tkinter)")
-    p_ui.set_defaults(func=_cmd_ui)
 
     p_train = sub.add_parser("train", help="Run performance training and print config recommendations")
     p_train.add_argument("--duration", default="20")

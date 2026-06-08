@@ -20,6 +20,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import os
@@ -116,6 +117,9 @@ class DictConfigSource(ConfigSource):
         return self._priority
     
     def get(self, key: str, default: Any = None) -> Any:
+        if key in self._data:
+            return self._data[key]
+
         keys = key.split(".")
         value = self._data
         for k in keys:
@@ -126,6 +130,9 @@ class DictConfigSource(ConfigSource):
         return value
     
     def has(self, key: str) -> bool:
+        if key in self._data:
+            return True
+
         keys = key.split(".")
         value = self._data
         for k in keys:
@@ -208,7 +215,10 @@ class FileConfigSource(ConfigSource):
     def get(self, key: str, default: Any = None) -> Any:
         if self._watch:
             self._check_reload()
-        
+
+        if key in self._data:
+            return self._data[key]
+
         keys = key.split(".")
         value = self._data
         for k in keys:
@@ -221,7 +231,10 @@ class FileConfigSource(ConfigSource):
     def has(self, key: str) -> bool:
         if self._watch:
             self._check_reload()
-        
+
+        if key in self._data:
+            return True
+
         keys = key.split(".")
         value = self._data
         for k in keys:
@@ -324,38 +337,31 @@ class EnvironmentConfigSource(ConfigSource):
 class ConfigManager:
     """
     统一配置管理器。
-    
+
     支持多配置源和优先级合并，提供类型安全的配置访问。
     
+    v2.0 新增:
+        - 版本化配置快照（snapshot / rollback）
+        - 审计追踪集成（AuditTrail）
+        - 配置变更记录（ChangeRecord，自动追踪变更前后值）
+
     Attributes:
         _sources: 配置源列表（按优先级排序）
         _change_callbacks: 配置变更回调列表
-    
-    方法:
-        - add_source: 添加配置源
-        - get: 获取配置值
-        - get_int: 获取整数配置
-        - get_float: 获取浮点数配置
-        - get_bool: 获取布尔配置
-        - get_str: 获取字符串配置
-        - get_list: 获取列表配置
-        - has: 检查配置是否存在
-        - set: 设置配置值
-        - on_change: 注册变更回调
-        - reload_all: 重新加载所有配置源
-    
-    Example:
-        >>> manager = ConfigManager()
-        >>> manager.add_source(DictConfigSource("defaults", {"ui.theme": "light"}))
-        >>> manager.add_source(FileConfigSource("config.json"))
-        >>> theme = manager.get("ui.theme", default="dark")
+        _snapshots: 配置快照列表 [(version, snapshot_dict), ...]
+        _version: 当前配置版本号
+        _audit: 审计追踪实例（可选）
     """
-    
+
     def __init__(self) -> None:
         self._sources: List[ConfigSource] = []
         self._change_callbacks: List[Callable[[str, Any, Any], None]] = []
         self._cache: Dict[str, Any] = {}
         self._cache_enabled: bool = True
+        self._snapshots: List[tuple[int, Dict[str, Any]]] = []
+        self._version: int = 0
+        self._audit: Any = None
+        self._max_snapshots: int = 50
     
     def add_source(self, source: ConfigSource) -> "ConfigManager":
         """
@@ -512,6 +518,114 @@ class ConfigManager:
         
         self._notify_change(key, old_value, value)
         return True
+
+    def set_audit_trail(self, audit: Any) -> None:
+        """集成审计追踪，自动记录所有配置变更。
+
+        Args:
+            audit: AuditTrail 实例
+        """
+        self._audit = audit
+
+    def get_version(self) -> int:
+        """获取当前配置版本号。"""
+        return self._version
+
+    def snapshot(self, description: str = "") -> int:
+        """创建当前配置的快照。
+
+        Args:
+            description: 快照描述
+
+        Returns:
+            快照版本号
+        """
+        self._version += 1
+        snapshot_data = copy.deepcopy(self.to_dict())
+        self._snapshots.append((self._version, snapshot_data))
+
+        while len(self._snapshots) > self._max_snapshots:
+            self._snapshots.pop(0)
+
+        if self._audit is not None:
+            from mca_core.audit import OperationType as OpT
+            self._audit.record(
+                op_type=OpT.CONFIG_SAVE,
+                detail=f"配置快照 v{self._version}: {description}" if description else
+                       f"配置快照 v{self._version}",
+                component="ConfigManager",
+            )
+
+        return self._version
+
+    def rollback(self, version: int) -> bool:
+        """回滚配置到指定版本。
+
+        Args:
+            version: 目标版本号
+
+        Returns:
+            是否成功回滚
+        """
+        for snap_ver, snap_data in self._snapshots:
+            if snap_ver == version:
+                for key, value in snap_data.items():
+                    self.set(key, value)
+                self._version = version
+                if self._audit is not None:
+                    from mca_core.audit import OperationType as OpT
+                    self._audit.record(
+                        op_type=OpT.CONFIG_RESET,
+                        detail=f"配置回滚到 v{version}",
+                        component="ConfigManager",
+                    )
+                return True
+        return False
+
+    def list_snapshots(self) -> List[Dict[str, Any]]:
+        """列出所有配置快照。
+
+        Returns:
+            快照元数据列表
+        """
+        return [
+            {"version": ver, "keys": len(data)}
+            for ver, data in self._snapshots
+        ]
+
+    def diff(self, version_a: int, version_b: int) -> Dict[str, Any]:
+        """比较两个版本的配置差异。
+
+        Args:
+            version_a: 版本 A
+            version_b: 版本 B
+
+        Returns:
+            差异字典 {"added": {}, "removed": {}, "changed": {}}
+        """
+        data_a: Dict[str, Any] = {}
+        data_b: Dict[str, Any] = {}
+        for ver, data in self._snapshots:
+            if ver == version_a:
+                data_a = data
+            if ver == version_b:
+                data_b = data
+
+        diff_result: Dict[str, Any] = {"added": {}, "removed": {}, "changed": {}}
+        all_keys = set(data_a.keys()) | set(data_b.keys())
+
+        for key in sorted(all_keys):
+            if key not in data_a:
+                diff_result["added"][key] = data_b[key]
+            elif key not in data_b:
+                diff_result["removed"][key] = data_a[key]
+            elif data_a[key] != data_b[key]:
+                diff_result["changed"][key] = {
+                    "old": data_a[key],
+                    "new": data_b[key],
+                }
+
+        return diff_result
     
     def _notify_change(self, key: str, old_value: Any, new_value: Any) -> None:
         """通知配置变更。"""

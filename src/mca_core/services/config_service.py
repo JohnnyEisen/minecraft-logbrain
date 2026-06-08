@@ -74,10 +74,14 @@ class ConfigService:
         
         Returns:
             AppConfig 配置对象实例
+            
+        Raises:
+            RuntimeError: 配置未正确加载
         """
         if self._config is None:
             self.load()
-        assert self._config is not None
+        if self._config is None:
+            raise RuntimeError("配置未正确加载，无法获取 AppConfig 实例")
         return self._config
 
     def get_scroll_sensitivity(self) -> int:

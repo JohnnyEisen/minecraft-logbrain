@@ -11,6 +11,7 @@ import fnmatch
 import ast
 import hashlib
 import hmac
+from typing import Optional
 
 # Add src/ to path for new directory structure
 src_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "src")
@@ -22,7 +23,7 @@ if os.path.exists(src_dir):
 # ============================================================
 
 # 获取签名密钥 - 优先级: 环境变量 > 内嵌密钥 > 默认密钥
-def _get_signature_key() -> bytes:
+def _get_signature_key() -> Optional[bytes]:
     """
     获取补丁签名密钥
     优先级: MCA_PATCH_SECRET环境变量 > 内嵌密钥 > 默认密钥
@@ -44,19 +45,31 @@ def _get_signature_key() -> bytes:
         except Exception:
             pass
     
-    # 3. 返回默认密钥 (仅用于开发环境警告)
-    return b'mca_default_key_for_dev_only'
+    # 3. VULN-007 修复: 生产环境拒绝默认密钥，必须配置 MCA_PATCH_SECRET
+    print("[Security] 未找到签名密钥。请设置环境变量 MCA_PATCH_SECRET 或创建 .patch_key 文件。")
+    print("[Security] 未签名补丁将被拒绝加载。")
+    return None
 
-
-def _compute_file_signature(filepath: str, key: bytes) -> str:
-    """计算文件的 HMAC-SHA256 签名"""
+def _compute_file_signature(filepath: str, key: bytes) -> Optional[str]:
+    """计算文件的 HMAC-SHA256 签名。
+    
+    H-002 修复: 失败时返回 None 并打印错误，而非返回空字符串
+    以防止调用方误判空签名为有效。
+    """
     try:
         with open(filepath, 'rb') as f:
             content = f.read()
         signature = hmac.new(key, content, hashlib.sha256).hexdigest()
         return signature
-    except Exception:
-        return ''
+    except FileNotFoundError:
+        print(f"[Security] 签名计算失败: 文件不存在 - {filepath}")
+        return None
+    except PermissionError:
+        print(f"[Security] 签名计算失败: 权限不足 - {filepath}")
+        return None
+    except Exception as e:
+        print(f"[Security] 签名计算失败: {filepath} - {e}")
+        return None
 
 
 def _load_approved_signatures() -> set:
@@ -75,7 +88,8 @@ def _load_approved_signatures() -> set:
                 for line in f:
                     line = line.strip()
                     if line and not line.startswith('#'):
-                        approved.add(line)
+                        # 仅提取第一个 token (签名)，忽略注释
+                        approved.add(line.split()[0] if line else line)
         except Exception:
             pass
     
@@ -86,6 +100,7 @@ def _load_approved_signatures() -> set:
 ALLOWED_PATCH_FILES = {
     'fix_crash.py',      # 崩溃修复
     'hotfix.py',         # 热修复
+    'hotfix_*.py',       # 热修复 (带后缀)
     'patch_*.py',        # 通配符匹配
 }
 
@@ -141,9 +156,15 @@ def _is_safe_patch_file(filepath: str) -> bool:
 def _verify_patch_signature(filepath: str) -> bool:
     """
     验证补丁文件签名
-    只有签名匹配的补丁才会被加载
+    只有签名匹配的补丁才会被加载。
+    VULN-007 修复: 未配置密钥时拒绝所有未签名补丁。
     """
-    signature = _compute_file_signature(filepath, _get_signature_key())
+    key = _get_signature_key()
+    if key is None:
+        print(f"[Security] 签名密钥未配置，拒绝补丁: {os.path.basename(filepath)}")
+        return False
+    
+    signature = _compute_file_signature(filepath, key)
     approved = _load_approved_signatures()
     
     if signature in approved:
@@ -154,7 +175,13 @@ def _verify_patch_signature(filepath: str) -> bool:
 
 
 def _load_patches_safely(patch_dir: str):
-    """安全加载补丁目录 - 需要签名验证"""
+    """安全加载补丁目录 - 需要签名验证。
+    
+    H-001 修复: 校验通过后通过 importlib 实际导入补丁模块。
+    """
+    import importlib
+    import importlib.util
+
     if not os.path.isdir(patch_dir):
         return
     
@@ -170,6 +197,8 @@ def _load_patches_safely(patch_dir: str):
         if not os.path.isfile(filepath):
             continue
         
+        mod_name = filename[:-3]  # strip .py
+
         # 安全验证
         if _is_safe_patch_file(filepath):
             # 签名验证
@@ -182,8 +211,18 @@ def _load_patches_safely(patch_dir: str):
                 if not path_inserted:
                     sys.path.insert(0, patch_dir)
                     path_inserted = True
-                print(f"[Hotfix] 已安全加载补丁: {filename}")
-                loaded_count += 1
+
+                # H-001 修复: 实际导入补丁模块
+                spec = importlib.util.spec_from_file_location(mod_name, filepath)
+                if spec is not None and spec.loader is not None:
+                    module = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(module)
+                    sys.modules[mod_name] = module
+                    print(f"[Hotfix] 已安全加载补丁: {filename}")
+                    loaded_count += 1
+                else:
+                    print(f"[Hotfix] 无法创建模块规格: {filename}")
+                    rejected_count += 1
             except Exception as e:
                 print(f"[Security] 加载补丁失败: {filename} - {e}")
                 rejected_count += 1

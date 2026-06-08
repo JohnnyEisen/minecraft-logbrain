@@ -4,27 +4,26 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mca-brain-system"
-version = "1.5.0"
+dynamic = ["version"]
 description = "Minecraft Crash Analyzer with Brain AI System"
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [{ name = "MCA Team" }]
 license = { text = "MIT" }
 
+dependencies = [
+  "packaging>=23.2",
+]
+
 [project.urls]
 Homepage = "https://github.com/JohnnyEisen/MCA-Brain-System"
 Repository = "https://github.com/JohnnyEisen/MCA-Brain-System.git"
 Issues = "https://github.com/JohnnyEisen/MCA-Brain-System/issues"
 
-dependencies = [
-  "packaging>=23.2",
-]
-
 [project.optional-dependencies]
 ai = [
   "torch>=2.0.0",
   "transformers>=4.38.0",
-  "accelerate",
   "numpy>=1.26.0",
 ]
 crypto = [
@@ -39,24 +38,16 @@ server = [
   "fastapi>=0.110.0",
   "uvicorn[standard]>=0.27.0",
 ]
-logging = [
-  "python-json-logger>=2.0.7",
-]
 config = [
-  "watchdog>=4.0.0",
   "python-consul2>=0.1.5",
 ]
 ha = [
   "redis>=5.0.0",
 ]
-docs = [
-  "sphinx>=7.2.0",
-]
 
 [project.scripts]
 mca = "main:main"
 brain = "brain_system.cli:main"
-brain-ui = "brain_system.ui:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -64,10 +55,15 @@ where = ["src"]
 [tool.setuptools.package-data]
 "*" = ["*.json", "*.yaml", "*.yml"]
 
+[tool.setuptools.dynamic]
+version = {attr = "brain_system.__version__"}
+
 [tool.pytest.ini_options]
 addopts = "-q"
 testpaths = ["tests"]
 pythonpath = ["src"]
+timeout = 60
+timeout_method = "thread"
 
 [tool.coverage.run]
 branch = true

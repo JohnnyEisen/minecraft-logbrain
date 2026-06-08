@@ -14,6 +14,7 @@
         - run_in_thread: 在后台线程中运行函数
         - RepeatingWorker: 重复执行任务的后台工作线程
         - BackgroundWatcher: 文件/配置变更监视器
+        - with_timeout: 超时保护装饰器/上下文管理器
 """
 
 from __future__ import annotations
@@ -22,12 +23,15 @@ import atexit
 import logging
 import multiprocessing
 import os
+import signal
 import threading
 import time
 from concurrent.futures import Executor, Future, ProcessPoolExecutor, ThreadPoolExecutor
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional, TypeVar
 
 logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
 
 
 # ============================================================
@@ -81,8 +85,8 @@ class ThreadPoolManager:
         self._shutdown_registered = False
         
         cpu_count = os.cpu_count() or 4
-        self._default_max_workers = min(cpu_count * 4, 32)
-        self._default_process_workers = min(cpu_count, 8)
+        self._default_max_workers = min(cpu_count * 2, 16)
+        self._default_process_workers = min(cpu_count, 4)
         
         self._initialized = True
     
@@ -95,9 +99,10 @@ class ThreadPoolManager:
     def reset(cls) -> None:
         """重置单例（仅用于测试）。"""
         with cls._lock:
-            if cls._instance is not None:
-                cls._instance.shutdown_all()
-                cls._instance = None
+            instance = cls._instance
+            cls._instance = None
+        if instance is not None:
+            instance.shutdown_all()
     
     @property
     def default_max_workers(self) -> int:
@@ -124,16 +129,17 @@ class ThreadPoolManager:
         Returns:
             ThreadPoolExecutor 实例
         """
-        if name not in self._pools:
-            workers = max_workers or self._default_max_workers
-            self._pools[name] = ThreadPoolExecutor(
-                max_workers=workers,
-                thread_name_prefix=f"MCA-{name}"
-            )
-            self._pool_configs[name] = workers
-            self._register_shutdown()
-        
-        return self._pools[name]
+        with self._lock:
+            if name not in self._pools:
+                workers = max_workers or self._default_max_workers
+                self._pools[name] = ThreadPoolExecutor(
+                    max_workers=workers,
+                    thread_name_prefix=f"MCA-{name}"
+                )
+                self._pool_configs[name] = workers
+                self._register_shutdown()
+            
+            return self._pools[name]
     
     def get_process_pool(
         self, 
@@ -148,13 +154,14 @@ class ThreadPoolManager:
         Returns:
             ProcessPoolExecutor 实例，如果配置为 0 则返回 None
         """
-        if self._process_pool is None:
-            workers = max_workers or self._default_process_workers
-            if workers > 0:
-                self._process_pool = ProcessPoolExecutor(max_workers=workers)
-                self._register_shutdown()
-        
-        return self._process_pool
+        with self._lock:
+            if self._process_pool is None:
+                workers = max_workers or self._default_process_workers
+                if workers > 0:
+                    self._process_pool = ProcessPoolExecutor(max_workers=workers)
+                    self._register_shutdown()
+            
+            return self._process_pool
     
     def submit(
         self,
@@ -221,25 +228,32 @@ class ThreadPoolManager:
             name: 线程池名称
             wait: 是否等待任务完成
         """
-        if name in self._pools:
-            self._pools[name].shutdown(wait=wait, cancel_futures=not wait)
-            del self._pools[name]
-            if name in self._pool_configs:
-                del self._pool_configs[name]
-    
-    def shutdown_all(self, wait: bool = False) -> None:
+        with self._lock:
+            if name in self._pools:
+                self._pools[name].shutdown(wait=wait, cancel_futures=not wait)
+                del self._pools[name]
+                if name in self._pool_configs:
+                    del self._pool_configs[name]
+
+    def shutdown_all(self, wait: bool = False, timeout: Optional[float] = None) -> None:
         """
         关闭所有线程池和进程池。
         
         Args:
             wait: 是否等待任务完成
+            timeout: 等待超时时间（秒），仅在 wait=True 时有效
         """
-        for name in list(self._pools.keys()):
-            self.shutdown_pool(name, wait=wait)
-        
-        if self._process_pool is not None:
-            self._process_pool.shutdown(wait=wait, cancel_futures=not wait)
-            self._process_pool = None
+        with self._lock:
+            for name in list(self._pools.keys()):
+                if name in self._pools:
+                    self._pools[name].shutdown(wait=wait, cancel_futures=not wait)
+                    del self._pools[name]
+                    if name in self._pool_configs:
+                        del self._pool_configs[name]
+            
+            if self._process_pool is not None:
+                self._process_pool.shutdown(wait=wait, cancel_futures=not wait)
+                self._process_pool = None
     
     def _register_shutdown(self) -> None:
         """注册退出时的清理函数。"""
@@ -291,7 +305,7 @@ def get_global_pool() -> ThreadPoolExecutor:
         with _pool_lock:
             if _global_pool is None:
                 manager = ThreadPoolManager.get_instance()
-                _global_pool = manager.get_pool("legacy")
+                _global_pool = manager.get_pool("default")
                 if _pool_max_workers is not None:
                     pass
 
@@ -466,16 +480,18 @@ class RepeatingWorker:
         self._thread = threading.Thread(target=run, name=self._name, daemon=True)
         self._thread.start()
 
-    def stop(self, timeout: Optional[float] = None) -> None:
+    def stop(self, timeout: Optional[float] = 5.0) -> None:
         """
         停止工作线程。
-        
+
         Args:
-            timeout: 等待线程结束的超时时间（秒）
+            timeout: 等待线程结束的超时时间（秒），默认 5 秒，None 表示无限等待
         """
         self._stop_event.set()
         if self._thread is not None:
             self._thread.join(timeout=timeout)
+            if self._thread.is_alive():
+                logger.warning("RepeatingWorker %s 未在 %.1fs 内停止", self._name, timeout or 0)
             self._thread = None
 
 
@@ -509,7 +525,7 @@ class BackgroundWatcher:
         self,
         file_path: str,
         on_change: Callable[[], None],
-        poll_interval: float = 1.0,
+        poll_interval: float = 5.0,
     ) -> None:
         """
         初始化文件监视器。
@@ -537,7 +553,6 @@ class BackgroundWatcher:
         return self._file_path
 
     def _check_file(self) -> None:
-        """检查文件是否变更。"""
         try:
             mtime = os.path.getmtime(self._file_path)
             if self._last_mtime is None:
@@ -549,7 +564,6 @@ class BackgroundWatcher:
             pass
 
     def start(self) -> None:
-        """启动监视。"""
         if self._worker is not None:
             return
 
@@ -561,7 +575,123 @@ class BackgroundWatcher:
         self._worker.start()
 
     def stop(self) -> None:
-        """停止监视。"""
         if self._worker is not None:
             self._worker.stop()
             self._worker = None
+
+
+# ============================================================
+# 超时保护 - Timeout Protection
+# ============================================================
+
+class TimeoutError(Exception):
+    """操作超时异常。"""
+
+    def __init__(self, message: str = "操作超时", timeout: float = 0.0) -> None:
+        super().__init__(message)
+        self.timeout = timeout
+
+
+def with_timeout(
+    timeout_seconds: float,
+    error_message: Optional[str] = None,
+) -> Callable[[Callable[..., T]], Callable[..., T]]:
+    """
+    超时保护装饰器。
+
+    使用线程实现超时控制，在指定时间内未完成则抛出 TimeoutError。
+
+    Args:
+        timeout_seconds: 超时时间（秒）
+        error_message: 自定义超时错误消息
+
+    Returns:
+        装饰器函数
+
+    Example:
+        >>> @with_timeout(5.0)
+        ... def long_task():
+        ...     time.sleep(10)
+        ...
+        >>> long_task()  # 5秒后抛出 TimeoutError
+    """
+
+    def decorator(func: Callable[..., T]) -> Callable[..., T]:
+        import functools
+
+        @functools.wraps(func)
+        def wrapper(*args: Any, **kwargs: Any) -> T:
+            result_container: list = []
+            exception_container: list = []
+
+            def target() -> None:
+                try:
+                    result_container.append(func(*args, **kwargs))
+                except Exception as e:
+                    exception_container.append(e)
+
+            thread = threading.Thread(target=target, daemon=True)
+            thread.start()
+            thread.join(timeout=timeout_seconds)
+
+            if thread.is_alive():
+                msg = error_message or f"操作超时 ({timeout_seconds}s): {func.__name__}"
+                raise TimeoutError(msg, timeout=timeout_seconds)
+
+            if exception_container:
+                raise exception_container[0]
+
+            return result_container[0]
+
+        return wrapper
+
+    return decorator
+
+
+def run_with_timeout(
+    func: Callable[..., T],
+    timeout_seconds: float,
+    *args: Any,
+    error_message: Optional[str] = None,
+    **kwargs: Any,
+) -> T:
+    """
+    在超时保护下运行函数。
+
+    Args:
+        func: 要执行的函数
+        timeout_seconds: 超时时间（秒）
+        *args: 函数位置参数
+        error_message: 自定义超时错误消息
+        **kwargs: 函数关键字参数
+
+    Returns:
+        函数返回值
+
+    Raises:
+        TimeoutError: 操作超时
+
+    Example:
+        >>> result = run_with_timeout(slow_function, 10.0, arg1, arg2)
+    """
+    result_container: list = []
+    exception_container: list = []
+
+    def target() -> None:
+        try:
+            result_container.append(func(*args, **kwargs))
+        except Exception as e:
+            exception_container.append(e)
+
+    thread = threading.Thread(target=target, daemon=True)
+    thread.start()
+    thread.join(timeout=timeout_seconds)
+
+    if thread.is_alive():
+        msg = error_message or f"操作超时 ({timeout_seconds}s): {func.__name__}"
+        raise TimeoutError(msg, timeout=timeout_seconds)
+
+    if exception_container:
+        raise exception_container[0]
+
+    return result_container[0]

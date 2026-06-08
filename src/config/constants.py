@@ -69,7 +69,7 @@ LOGS_DIR: Final[str] = os.path.join(ROOT_DIR, "logs")
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(LOGS_DIR, exist_ok=True)
 
-WINDOW_TITLE: Final[str] = "Minecraft Crash Analyzer v1.5.0"
+WINDOW_TITLE: Final[str] = "Minecraft Crash Analyzer with Brain AI System"
 WINDOW_DEFAULT_SIZE: Final[str] = "1280x850"
 WINDOW_MIN_WIDTH: Final[int] = 1000
 WINDOW_MIN_HEIGHT: Final[int] = 700
@@ -94,6 +94,23 @@ DEFAULT_MAX_BYTES: Final[int] = 8 * 1024 * 1024
 LAB_HEAD_READ_SIZE: Final[int] = 128 * 1024
 LAB_SAMPLE_SIZE: Final[int] = 50 * 1024
 AI_SEMANTIC_LIMIT: Final[int] = 4096
+
+LOG_FILE_MAX_BYTES: Final[int] = 10 * 1024 * 1024
+LOG_FILE_BACKUP_COUNT: Final[int] = 5
+LARGE_FILE_THRESHOLD: Final[int] = 10 * 1024 * 1024
+STREAM_CHUNK_SIZE: Final[int] = 256 * 1024
+LOG_HASH_PREFIX_LENGTH: Final[int] = 65536
+DEFAULT_TARGET_BYTES: Final[int] = 2 * 1024 * 1024
+PROCESS_POOL_PAYLOAD_MAX_BYTES: Final[int] = 262_144
+
+DEFAULT_MAX_THREAD_WORKERS: Final[int] = 16
+DEFAULT_MAX_PROCESS_WORKERS: Final[int] = 4
+DB_CONNECTION_POOL_SIZE: Final[int] = 5
+DB_BUSY_TIMEOUT_MS: Final[int] = 30000
+
+DETECTOR_TIMEOUT_SECONDS: Final[float] = 15.0
+SHUTDOWN_TIMEOUT_SECONDS: Final[float] = 5.0
+FUTURE_RESULT_TIMEOUT_SECONDS: Final[float] = 30.0
 
 
 # ============================================================

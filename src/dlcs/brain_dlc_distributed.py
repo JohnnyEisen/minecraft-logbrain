@@ -1,4 +1,7 @@
-"""Distributed DLC: 多 Worker 模拟与数据切分。"""
+"""Distributed DLC: 多 Worker 模拟与数据切分。
+
+v1.5.5: DI 集成 (config/audit)，版本号统一引用 __version__。
+"""
 from __future__ import annotations
 
 import logging
@@ -8,12 +11,13 @@ from typing import Any, Dict, List, Optional
 import math
 
 from brain_system import BrainCore, BrainDLC, BrainDLCType, DLCManifest
+from brain_system import __version__
 
 class DistributedComputingDLC(BrainDLC):
     def get_manifest(self) -> DLCManifest:
         return DLCManifest(
             name="Distributed Computing",
-            version="1.1.0",
+            version=__version__,
             author="Brain AI Systems",
             description="提供简易的单机多Worker并行/数据切分能力",
             dlc_type=BrainDLCType.MANAGER,
@@ -28,7 +32,7 @@ class DistributedComputingDLC(BrainDLC):
         self.is_running = False
         logging.info("DistributedComputingDLC 初始化")
 
-    def shutdown(self):
+    def _pre_shutdown(self):
         self.stop_workers()
 
     def provide_computational_units(self) -> Dict[str, Any]:

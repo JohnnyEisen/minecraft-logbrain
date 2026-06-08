@@ -13,16 +13,20 @@ from typing import Any, Optional, Callable, Generator
 logger = logging.getLogger("mca_core.database")
 
 class ConnectionPool:
-    """SQLite 连接池，复用读取连接。"""
-    
+    """SQLite 连接池，复用读取连接。
+
+    使用 threading.Semaphore 限制并发连接数，
+    避免无限创建/销毁连接的开销。
+    """
+
     def __init__(self, db_path: str, max_size: int = 5, timeout: float = 30.0):
         self.db_path = db_path
         self.max_size = max_size
         self.timeout = timeout
         self._pool: deque[sqlite3.Connection] = deque()
         self._lock = threading.Lock()
-        self._created = 0
-    
+        self._semaphore = threading.BoundedSemaphore(max_size)
+
     def _create_conn(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, timeout=self.timeout, check_same_thread=False)
         conn.row_factory = sqlite3.Row
@@ -30,17 +34,21 @@ class ConnectionPool:
         conn.execute("PRAGMA synchronous=NORMAL;")
         conn.execute("PRAGMA read_uncommitted=ON;")
         return conn
-    
+
     def get(self) -> sqlite3.Connection:
+        """获取连接。池空时阻塞等待，确保不超过 max_size。"""
+        self._semaphore.acquire()
         with self._lock:
             if self._pool:
                 return self._pool.popleft()
-            if self._created < self.max_size:
-                self._created += 1
-                return self._create_conn()
-        return self._create_conn()
-    
+        try:
+            return self._create_conn()
+        except Exception:
+            self._semaphore.release()
+            raise
+
     def put(self, conn: sqlite3.Connection) -> None:
+        """归还连接到池中。"""
         with self._lock:
             if len(self._pool) < self.max_size:
                 self._pool.append(conn)
@@ -49,6 +57,7 @@ class ConnectionPool:
                     conn.close()
                 except Exception:
                     pass
+        self._semaphore.release()
     
     @contextmanager
     def connection(self) -> Generator[sqlite3.Connection, None, None]:
@@ -76,10 +85,10 @@ class DatabaseManager:
         self._write_queue = queue.Queue()
         self._shutdown_event = threading.Event()
         self._read_pool = ConnectionPool(db_path, max_size=5)
-        self._ensure_tables()
-        self._apply_pragma()
         self._writer_thread = threading.Thread(target=self._writer_loop, name="DB-Writer-Thread", daemon=True)
         self._writer_thread.start()
+        self._queue_write(self._ensure_tables_sync, wait=True)
+        self._queue_write(self._apply_pragma_sync, wait=True)
 
     @classmethod
     def get_instance(cls, db_path: str = "mca_data.db"):
@@ -127,46 +136,35 @@ class DatabaseManager:
         finally:
             if writer_conn: writer_conn.close()
 
+    _WRITE_TIMEOUT = 30.0
+
     def _queue_write(self, func: Callable, *args, wait: bool = False, **kwargs) -> Any:
         if wait:
             result_queue = queue.Queue()
             self._write_queue.put((func, args, kwargs, result_queue))
-            status, res = result_queue.get()
+            try:
+                status, res = result_queue.get(timeout=self._WRITE_TIMEOUT)
+            except queue.Empty:
+                logger.error("DB write timed out after %.0fs — writer thread may have crashed", self._WRITE_TIMEOUT)
+                return -1
             if status == "error": return -1
             return res
         else:
             self._write_queue.put((func, args, kwargs, None))
             return 1
 
-    def _apply_pragma(self) -> None:
+    def _apply_pragma_sync(self, conn) -> None:
         pragma_statements = ["PRAGMA journal_mode=WAL;", "PRAGMA synchronous=NORMAL;", "PRAGMA foreign_keys=ON;", "PRAGMA busy_timeout=30000;", "PRAGMA cache_size=-64000;"]
-        conn = None
-        try:
-            conn = self._get_conn()
-            for pragma in pragma_statements:
-                conn.execute(pragma)
-            conn.commit()
-        except Exception as e:
-            logger.warning(f"Failed to apply PRAGMA settings: {e}")
-        finally:
-            if conn:
-                self._return_conn(conn)
+        for pragma in pragma_statements:
+            conn.execute(pragma)
+        conn.commit()
 
-    def _ensure_tables(self) -> None:
-        def _create_tables(conn):
-            schema_queries = ["CREATE TABLE IF NOT EXISTS crash_history (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT, file_path TEXT, file_hash TEXT, loader_type TEXT, mod_count INTEGER, summary TEXT, raw_log_snippet TEXT)", "CREATE TABLE IF NOT EXISTS crash_causes (id INTEGER PRIMARY KEY AUTOINCREMENT, crash_id INTEGER, cause_type TEXT, description TEXT, confidence FLOAT, FOREIGN KEY(crash_id) REFERENCES crash_history(id) ON DELETE CASCADE)", "CREATE TABLE IF NOT EXISTS knowledge_patterns (id INTEGER PRIMARY KEY AUTOINCREMENT, pattern_signature TEXT UNIQUE, solution_text TEXT, hit_count INTEGER DEFAULT 0, is_verified BOOLEAN DEFAULT 0, source TEXT)", "CREATE TABLE IF NOT EXISTS mod_index (mod_id TEXT, version TEXT, loader TEXT, is_problematic BOOLEAN DEFAULT 0, last_seen TEXT, PRIMARY KEY (mod_id, version, loader))"]
-            index_queries = ["CREATE INDEX IF NOT EXISTS idx_crash_created ON crash_history(created_at DESC)", "CREATE INDEX IF NOT EXISTS idx_crash_causes_crash_id ON crash_causes(crash_id)", "CREATE INDEX IF NOT EXISTS idx_mod_is_problematic ON mod_index(is_problematic)", "CREATE INDEX IF NOT EXISTS idx_mod_last_seen ON mod_index(last_seen)"]
-            for query in schema_queries + index_queries: conn.execute(query)
-            conn.commit()
-        conn = None
-        try:
-            conn = self._get_conn()
-            _create_tables(conn)
-        except Exception as e:
-            logger.error(f"Database initialization failed: {e}")
-        finally:
-            if conn:
-                self._return_conn(conn)
+    def _ensure_tables_sync(self, conn) -> None:
+        schema_queries = ["CREATE TABLE IF NOT EXISTS crash_history (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT, file_path TEXT, file_hash TEXT, loader_type TEXT, mod_count INTEGER, summary TEXT, raw_log_snippet TEXT)", "CREATE TABLE IF NOT EXISTS crash_causes (id INTEGER PRIMARY KEY AUTOINCREMENT, crash_id INTEGER, cause_type TEXT, description TEXT, confidence FLOAT, FOREIGN KEY(crash_id) REFERENCES crash_history(id) ON DELETE CASCADE)", "CREATE TABLE IF NOT EXISTS knowledge_patterns (id INTEGER PRIMARY KEY AUTOINCREMENT, pattern_signature TEXT UNIQUE, solution_text TEXT, hit_count INTEGER DEFAULT 0, is_verified BOOLEAN DEFAULT 0, source TEXT)", "CREATE TABLE IF NOT EXISTS mod_index (mod_id TEXT, version TEXT, loader TEXT, is_problematic BOOLEAN DEFAULT 0, last_seen TEXT, PRIMARY KEY (mod_id, version, loader))"]
+        index_queries = ["CREATE INDEX IF NOT EXISTS idx_crash_created ON crash_history(created_at DESC)", "CREATE INDEX IF NOT EXISTS idx_crash_causes_crash_id ON crash_causes(crash_id)", "CREATE INDEX IF NOT EXISTS idx_mod_is_problematic ON mod_index(is_problematic)", "CREATE INDEX IF NOT EXISTS idx_mod_last_seen ON mod_index(last_seen)"]
+        for query in schema_queries + index_queries:
+            conn.execute(query)
+        conn.commit()
 
     def _execute_read(self, query: str, params: tuple = ()) -> list[dict[str, Any]]:
         conn = None

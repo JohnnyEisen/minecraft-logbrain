@@ -41,6 +41,15 @@ class AppConfig:
     auto_save_interval: int = 300
     theme: str = "light"
     enable_smart_learning: bool = True
+
+    # AI 语义引擎优化配置
+    enable_cross_encoder: bool = True      # Cross-Encoder 重排序
+    enable_attention_pooling: bool = True  # 注意力加权池化
+    use_fp16: bool = True                  # FP16 混合精度（推荐）
+    use_int8: bool = False                 # Int8 量化（更激进，默认关闭）
+    output_dim: int = 768                  # 输出向量维度（768/384/192/96）
+    model_path: str = ""                   # 微调模型路径（空=使用基础模型）
+
     _mtime: float = field(default=0.0, repr=False)
     
     def _validate(self) -> None:

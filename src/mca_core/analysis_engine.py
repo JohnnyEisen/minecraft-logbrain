@@ -17,6 +17,7 @@ GPU_ISSUES_FILE = os.path.join(
 )
 
 _gpu_rules_cache: Optional[dict] = None
+_gpu_rules_lock = threading.Lock()
 _RE_MOD_JAR = re.compile(r"(?:^|[\/\\])([a-zA-Z0-9_\-]+)-(\d[\w\.\-]+)\.jar")
 
 
@@ -24,17 +25,20 @@ def load_gpu_rules() -> dict[str, Any]:
     global _gpu_rules_cache
     if _gpu_rules_cache is not None:
         return _gpu_rules_cache
-    try:
-        if os.path.exists(GPU_ISSUES_FILE):
-            with open(GPU_ISSUES_FILE, "r", encoding="utf-8") as fp:
-                loaded = json.load(fp)
-                if isinstance(loaded, dict):
-                    _gpu_rules_cache = loaded
-                    return loaded
-    except Exception:
-        pass
-    _gpu_rules_cache = {}
-    return {}
+    with _gpu_rules_lock:
+        if _gpu_rules_cache is not None:
+            return _gpu_rules_cache
+        try:
+            if os.path.exists(GPU_ISSUES_FILE):
+                with open(GPU_ISSUES_FILE, "r", encoding="utf-8") as fp:
+                    loaded = json.load(fp)
+                    if isinstance(loaded, dict):
+                        _gpu_rules_cache = loaded
+                        return loaded
+        except Exception:
+            pass
+        _gpu_rules_cache = {}
+        return {}
 
 
 def format_hardware_report(result: dict[str, Any], system_info: dict[str, Any]) -> str:

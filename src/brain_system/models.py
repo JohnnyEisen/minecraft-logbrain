@@ -14,6 +14,19 @@ class BrainDLCType(Enum):
     RESOLVER = "resolver"
 
 
+class DLCState(Enum):
+    """DLC 生命周期状态"""
+
+    UNLOADED = "unloaded"
+    LOADING = "loading"
+    LOADED = "loaded"
+    INITIALIZED = "initialized"
+    ACTIVE = "active"
+    SUSPENDED = "suspended"
+    DISABLED = "disabled"
+    FAILED = "failed"
+
+
 @dataclass(frozen=True, slots=True)
 class DLCManifest:
     """DLC 清单信息"""

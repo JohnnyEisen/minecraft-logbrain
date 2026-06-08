@@ -217,9 +217,9 @@ class DIContainer:
             key: 服务标识符
             instance: 服务实例
         """
-        self._singletons[type(instance)] = instance
-        self._services[type(instance)] = ServiceDescriptor(
-            service_type=type(instance),
+        self._singletons[key] = instance
+        self._services[key] = ServiceDescriptor(
+            service_type=key,
             instance=instance,
             lifetime=ServiceLifetime.SINGLETON,
         )

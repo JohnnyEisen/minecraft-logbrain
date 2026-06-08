@@ -50,6 +50,7 @@ from PyQt6.QtWidgets import (
 )
 
 from config.constants import CONFIG_FILE, GPU_ISSUES_FILE
+from brain_system import __version__
 from mca_core.hardware_analysis import analyze_hardware_log
 from mca_core.services.config_service import ConfigService
 from mca_core.diagnostic_engine import DiagnosticEngine
@@ -62,7 +63,7 @@ from mca_core.archive_utils import (
     is_log_file,
 )
 from mca_core.analysis_engine import (
-    load_gpu_rules as _get_gpu_rules,
+    load_gpu_rules,
     format_hardware_report,
     scan_mods_directory,
     write_dep_csv,
@@ -100,6 +101,13 @@ except ImportError:
     DashboardPanelPyQt = None
     DashboardController = None
 
+try:
+    from mca_core.dlc_manager_panel_pyqt import DLCManagerPanelPyQt
+    HAS_DLC_MANAGER: bool = True
+except ImportError:
+    HAS_DLC_MANAGER = False
+    DLCManagerPanelPyQt = None
+
 if TYPE_CHECKING:
     from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
     from matplotlib.figure import Figure
@@ -132,26 +140,6 @@ MODE_DESCRIPTIONS = [
 ]
 
 _RE_MOD_JAR = re.compile(r"([a-zA-Z0-9_\-]+)-(\d[\w\.\-]+)\.jar")
-
-# GPU Issues JSON 缓存 (避免每次硬件刷新都重新读取)
-_gpu_rules_cache: Optional[dict] = None
-
-
-def _get_gpu_rules() -> dict[str, Any]:
-    global _gpu_rules_cache
-    if _gpu_rules_cache is not None:
-        return _gpu_rules_cache
-    try:
-        if os.path.exists(GPU_ISSUES_FILE):
-            with open(GPU_ISSUES_FILE, "r", encoding="utf-8") as fp:
-                loaded = json.load(fp)
-                if isinstance(loaded, dict):
-                    _gpu_rules_cache = loaded
-                    return loaded
-    except Exception:
-        pass
-    _gpu_rules_cache = {}
-    return {}
 
 logger = logging.getLogger(__name__)
 
@@ -887,7 +875,7 @@ class SiliconeCapsuleApp(MenuMixin, AutoTestMixin, AnalysisMixin, QMainWindow):
         except Exception:
             system_info = {}
 
-        gpu_rules = _get_gpu_rules()
+        gpu_rules = load_gpu_rules()
 
         result = analyze_hardware_log(
             text,
@@ -1041,6 +1029,8 @@ class SiliconeCapsuleApp(MenuMixin, AutoTestMixin, AnalysisMixin, QMainWindow):
             self.btn_start_ai.setEnabled(False)
             self._set_brain_monitor_state("active")
             self._set_status_text("状态: 语义分析模块已就绪")
+            if hasattr(self, "dlc_manager_panel") and self.dlc_manager_panel is not None:
+                self.dlc_manager_panel.set_brain(self.brain)
             QMessageBox.information(self, "成功", "语义分析模块已启用。")
         else:
             self.btn_start_ai.setText("启用语义分析")
@@ -1100,10 +1090,10 @@ class SiliconeCapsuleApp(MenuMixin, AutoTestMixin, AnalysisMixin, QMainWindow):
         QMessageBox.about(
             self,
             "关于 MCA 崩溃分析器",
-            "<h2>Minecraft 崩溃日志分析器</h2>"
-            "<p><b>版本:</b> 1.5.0 (PyQt6)</p>"
-            "<p>用于分析崩溃日志并提供排查建议。</p>"
-            "<p>界面框架: PyQt6</p>"
+            f"<h2>Minecraft 崩溃日志分析器</h2>"
+            f"<p><b>版本:</b> {__version__} (PyQt6)</p>"
+            f"<p>用于分析崩溃日志并提供排查建议。</p>"
+            f"<p>界面框架: PyQt6</p>"
         )
 
     def setup_ui(self) -> None:
@@ -1113,8 +1103,8 @@ class SiliconeCapsuleApp(MenuMixin, AutoTestMixin, AnalysisMixin, QMainWindow):
         self.setCentralWidget(self.central_widget)
         
         self.main_layout = QVBoxLayout(self.central_widget)
-        self.main_layout.setContentsMargins(25, 25, 25, 25)
-        self.main_layout.setSpacing(20)
+        self.main_layout.setContentsMargins(24, 24, 24, 24)
+        self.main_layout.setSpacing(16)
         
         self._setup_header()
         self._setup_toolbar()
@@ -1123,15 +1113,16 @@ class SiliconeCapsuleApp(MenuMixin, AutoTestMixin, AnalysisMixin, QMainWindow):
     def _setup_header(self) -> None:
         """设置标题。"""
         self.header_label = QLabel("Minecraft 崩溃日志分析系统 (PyQt6)")
-        self.header_label.setStyleSheet("font-size: 26px; font-weight: bold; color: #2d3748;")
+        self.header_label.setObjectName("h1")
         self.main_layout.addWidget(self.header_label, alignment=Qt.AlignmentFlag.AlignCenter)
 
     def _setup_toolbar(self) -> None:
         """设置工具栏。"""
         self.toolbar_layout = QHBoxLayout()
-        self.toolbar_layout.setSpacing(15)
+        self.toolbar_layout.setSpacing(8)
         
         self.btn_load = QPushButton("加载日志")
+        self.btn_load.setObjectName("toolbarBtn")
         self.btn_load.clicked.connect(self.on_load_clicked)
         
         self.btn_analyze = QPushButton("开始分析")
@@ -1140,26 +1131,37 @@ class SiliconeCapsuleApp(MenuMixin, AutoTestMixin, AnalysisMixin, QMainWindow):
         self.btn_analyze.setEnabled(False)
         
         self.btn_settings = QPushButton("系统设置")
+        self.btn_settings.setObjectName("toolbarBtn")
         self.btn_settings.clicked.connect(self.on_settings_clicked)
 
         self.btn_patch = QPushButton("补丁管理")
+        self.btn_patch.setObjectName("toolbarBtn")
         self.btn_patch.clicked.connect(self._on_patch_clicked)
         if not HAS_PATCH_PANEL:
             self.btn_patch.setEnabled(False)
             self.btn_patch.setToolTip("补丁管理模块不可用 (mca_core.patch_panel_pyqt 导入失败)")
 
         self.btn_dashboard = QPushButton("仪表盘")
+        self.btn_dashboard.setObjectName("toolbarBtn")
         self.btn_dashboard.clicked.connect(self._on_dashboard_clicked)
         if not HAS_DASHBOARD_PANEL:
             self.btn_dashboard.setEnabled(False)
             self.btn_dashboard.setToolTip("仪表盘模块不可用 (mca_core.dashboard.dashboard_panel_pyqt 导入失败)")
 
+        self.btn_dlc_manager = QPushButton("DLC 管理")
+        self.btn_dlc_manager.setObjectName("toolbarBtn")
+        self.btn_dlc_manager.clicked.connect(self._on_dlc_manager_clicked)
+        if not HAS_DLC_MANAGER:
+            self.btn_dlc_manager.setEnabled(False)
+            self.btn_dlc_manager.setToolTip("DLC 管理模块不可用 (mca_core.dlc_manager_panel_pyqt 导入失败)")
+
         self.btn_start_ai = QPushButton("启用语义分析")
+        self.btn_start_ai.setObjectName("toolbarBtn")
         self.btn_start_ai.clicked.connect(self.start_ai_init_if_needed)
         
         exact_version = platform.python_version()
         self.status_label = QLabel("")
-        self.status_label.setStyleSheet("color: #718096; font-style: italic;")
+        self.status_label.setObjectName("caption")
 
         self.brain_monitor = None
         if BrainMonitorWidget is not None:
@@ -1172,6 +1174,7 @@ class SiliconeCapsuleApp(MenuMixin, AutoTestMixin, AnalysisMixin, QMainWindow):
         self.toolbar_layout.addWidget(self.btn_analyze)
         self.toolbar_layout.addWidget(self.btn_patch)
         self.toolbar_layout.addWidget(self.btn_dashboard)
+        self.toolbar_layout.addWidget(self.btn_dlc_manager)
         self.toolbar_layout.addWidget(self.btn_start_ai)
         self.toolbar_layout.addWidget(self.btn_settings)
         self.toolbar_layout.addWidget(self.status_label)
@@ -1193,7 +1196,7 @@ class SiliconeCapsuleApp(MenuMixin, AutoTestMixin, AnalysisMixin, QMainWindow):
         self.splitter.setSizes([500, 700])
         self.splitter.setStretchFactor(0, 5)
         self.splitter.setStretchFactor(1, 7)
-        self.splitter.setHandleWidth(8)
+        self.splitter.setHandleWidth(6)
 
         self.main_layout.addWidget(self.splitter, stretch=1)
 
@@ -1204,11 +1207,11 @@ class SiliconeCapsuleApp(MenuMixin, AutoTestMixin, AnalysisMixin, QMainWindow):
         self.log_layout = QVBoxLayout(self.log_card)
         
         log_title = QLabel("崩溃日志原文")
-        log_title.setStyleSheet("font-weight: bold; font-size: 14px;")
+        log_title.setObjectName("sectionHeader")
         self.log_text_edit = QTextEdit()
         self.log_text_edit.setReadOnly(True)
         self.log_text_edit.setPlaceholderText("点击上方「加载日志」按钮或拖拽日志文件 / 压缩包到此窗口...")
-        self.log_text_edit.setStyleSheet("font-family: Consolas, monospace; font-size: 12px; background: transparent; border: none;")
+        self.log_text_edit.setStyleSheet("font-family: Consolas, monospace; font-size: 12px; border: none; background: transparent;")
         
         self.log_layout.addWidget(log_title)
         self.log_layout.addWidget(self.log_text_edit)
@@ -1223,7 +1226,6 @@ class SiliconeCapsuleApp(MenuMixin, AutoTestMixin, AnalysisMixin, QMainWindow):
         
         self.progress = QProgressBar()
         self.progress.setValue(0)
-        self.progress.setFixedHeight(8)
         self.progress.hide()
         
         self.right_layout.addWidget(self.tabs)
@@ -1241,6 +1243,7 @@ class SiliconeCapsuleApp(MenuMixin, AutoTestMixin, AnalysisMixin, QMainWindow):
         self._setup_auto_test_tab()
         self._setup_patch_tab()
         self._setup_dashboard_tab()
+        self._setup_dlc_manager_tab()
 
         self.tabs.addTab(self.tab_results, "诊断报告")
         self.tabs.addTab(self.tab_mods, "环境与模组")
@@ -1249,6 +1252,7 @@ class SiliconeCapsuleApp(MenuMixin, AutoTestMixin, AnalysisMixin, QMainWindow):
         self.tabs.addTab(self.tab_auto_test, "自动化测试")
         self.tabs.addTab(self.tab_patch, "补丁管理")
         self.tabs.addTab(self.tab_dashboard, "仪表盘")
+        self.tabs.addTab(self.tab_dlc_manager, "DLC 管理")
 
     def _setup_results_tab(self) -> None:
         """设置结果标签页。"""
@@ -1256,7 +1260,7 @@ class SiliconeCapsuleApp(MenuMixin, AutoTestMixin, AnalysisMixin, QMainWindow):
         self.tab_results_layout = QVBoxLayout(self.tab_results)
         self.result_text_edit = QTextEdit()
         self.result_text_edit.setReadOnly(True)
-        self.result_text_edit.setStyleSheet("font-family: Consolas, monospace; font-size: 14px; color: #2c5282; border: none; background: transparent;")
+        self.result_text_edit.setStyleSheet("font-family: Consolas, monospace; font-size: 13px; border: none; background: transparent;")
         self.tab_results_layout.addWidget(self.result_text_edit)
 
     def _setup_mods_tab(self) -> None:
@@ -1264,7 +1268,7 @@ class SiliconeCapsuleApp(MenuMixin, AutoTestMixin, AnalysisMixin, QMainWindow):
         self.tab_mods = QWidget()
         self.tab_mods_layout = QVBoxLayout(self.tab_mods)
         self.mod_list_widget = QListWidget()
-        self.mod_list_widget.setStyleSheet("border: none; background: transparent; font-size: 13px;")
+        self.mod_list_widget.setStyleSheet("border: none; background: transparent;")
         self.tab_mods_layout.addWidget(self.mod_list_widget)
 
     def _setup_graphs_tab(self) -> None:
@@ -1273,7 +1277,7 @@ class SiliconeCapsuleApp(MenuMixin, AutoTestMixin, AnalysisMixin, QMainWindow):
         self.tab_graphs_layout = QVBoxLayout(self.tab_graphs)
         self._graph_placeholder = QLabel("图表模块将在首次绘制时初始化")
         self._graph_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._graph_placeholder.setStyleSheet("color: #718096; font-style: italic;")
+        self._graph_placeholder.setObjectName("caption")
         self.tab_graphs_layout.addWidget(self._graph_placeholder)
 
     def _setup_hardware_tab(self) -> None:
@@ -1290,8 +1294,23 @@ class SiliconeCapsuleApp(MenuMixin, AutoTestMixin, AnalysisMixin, QMainWindow):
         """设置自动测试标签页。"""
         self.tab_auto_test = QWidget()
         self.tab_auto_test_layout = QVBoxLayout(self.tab_auto_test)
+        self.tab_auto_test_layout.setContentsMargins(0, 0, 0, 0)
+
+        splitter = QSplitter(Qt.Orientation.Vertical)
+        splitter.setHandleWidth(4)
+
+        config_panel = QFrame()
+        config_panel.setObjectName("siliconeCard")
+        config_layout = QVBoxLayout(config_panel)
+        config_layout.setContentsMargins(8, 8, 8, 8)
+        config_layout.setSpacing(6)
+
+        config_heading = QLabel("测试配置")
+        config_heading.setObjectName("sectionHeader")
+        config_layout.addWidget(config_heading)
 
         auto_form = QFormLayout()
+        auto_form.setSpacing(4)
         self.auto_test_output_edit = QLineEdit(os.path.join(ROOT_DIR, "tmp", "autotests"))
         self.auto_test_output_edit.setPlaceholderText("自动生成日志输出目录")
         auto_form.addRow(QLabel("输出目录:"), self.auto_test_output_edit)
@@ -1308,10 +1327,15 @@ class SiliconeCapsuleApp(MenuMixin, AutoTestMixin, AnalysisMixin, QMainWindow):
         self.auto_test_cleanup_check = QCheckBox("完成后自动清理生成文件")
         self.auto_test_cleanup_check.setChecked(True)
         auto_form.addRow(QLabel("清理选项:"), self.auto_test_cleanup_check)
-        self.tab_auto_test_layout.addLayout(auto_form)
+        config_layout.addLayout(auto_form)
+
+        scenario_label = QLabel("测试场景 (可多选):")
+        scenario_label.setObjectName("body-sm")
+        config_layout.addWidget(scenario_label)
 
         self.auto_test_scenarios = QListWidget()
         self.auto_test_scenarios.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
+        self.auto_test_scenarios.setMaximumHeight(140)
         try:
             from scripts.dev.generate_mc_log import SCENARIOS
         except ImportError:
@@ -1331,32 +1355,52 @@ class SiliconeCapsuleApp(MenuMixin, AutoTestMixin, AnalysisMixin, QMainWindow):
         self.auto_test_scenarios.addItem("custom - 自定义日志 (粘贴到下框)")
         for i in range(self.auto_test_scenarios.count() - 1):
             self.auto_test_scenarios.item(i).setSelected(True)
-        self.tab_auto_test_layout.addWidget(QLabel("测试场景 (可多选):"))
-        self.tab_auto_test_layout.addWidget(self.auto_test_scenarios)
+        config_layout.addWidget(self.auto_test_scenarios)
 
         auto_btns = QHBoxLayout()
+        auto_btns.setSpacing(8)
         self.btn_auto_test_start = QPushButton("开始自动化测试")
+        self.btn_auto_test_start.setObjectName("accentButton")
         self.btn_auto_test_start.clicked.connect(self.start_auto_test)
         self.btn_auto_test_stop = QPushButton("停止")
+        self.btn_auto_test_stop.setObjectName("dangerBtn")
         self.btn_auto_test_stop.clicked.connect(self.stop_auto_test)
         self.btn_auto_test_stop.setEnabled(False)
         auto_btns.addWidget(self.btn_auto_test_start)
         auto_btns.addWidget(self.btn_auto_test_stop)
         auto_btns.addStretch()
-        self.tab_auto_test_layout.addLayout(auto_btns)
+        config_layout.addLayout(auto_btns)
 
         self.auto_test_progress = QProgressBar()
         self.auto_test_progress.setValue(0)
-        self.tab_auto_test_layout.addWidget(self.auto_test_progress)
+        config_layout.addWidget(self.auto_test_progress)
 
         self.auto_test_stats_label = QLabel("统计: 生成耗时 -, 样本数 -, 清理状态 -")
-        self.tab_auto_test_layout.addWidget(self.auto_test_stats_label)
+        self.auto_test_stats_label.setObjectName("caption")
+        config_layout.addWidget(self.auto_test_stats_label)
+
+        log_panel = QFrame()
+        log_panel.setObjectName("siliconeCard")
+        log_layout = QVBoxLayout(log_panel)
+        log_layout.setContentsMargins(8, 8, 8, 8)
+
+        log_heading = QLabel("测试日志")
+        log_heading.setObjectName("sectionHeader")
+        log_layout.addWidget(log_heading)
 
         self.auto_test_log_edit = QTextEdit()
         self.auto_test_log_edit.setReadOnly(True)
         self.auto_test_log_edit.setPlaceholderText("自动化测试日志输出...")
-        self.auto_test_log_edit.setStyleSheet("font-family: Consolas, monospace; font-size: 12px; border: none; background: transparent;")
-        self.tab_auto_test_layout.addWidget(self.auto_test_log_edit)
+        self.auto_test_log_edit.setStyleSheet(
+            "font-family: Consolas, monospace; font-size: 12px; border: none; background: transparent;"
+        )
+        log_layout.addWidget(self.auto_test_log_edit)
+
+        splitter.addWidget(config_panel)
+        splitter.addWidget(log_panel)
+        splitter.setSizes([320, 280])
+
+        self.tab_auto_test_layout.addWidget(splitter)
 
     def _setup_patch_tab(self) -> None:
         """设置补丁管理标签页。"""
@@ -1365,6 +1409,8 @@ class SiliconeCapsuleApp(MenuMixin, AutoTestMixin, AnalysisMixin, QMainWindow):
         self.tab_patch_layout.setContentsMargins(0, 0, 0, 0)
 
         if HAS_PATCH_PANEL:
+            if PatchPanel is None:
+                raise RuntimeError("补丁管理面板模块导入失败")
             self.patch_panel = PatchPanel(parent=self)
             self.tab_patch_layout.addWidget(self.patch_panel)
         else:
@@ -1384,6 +1430,8 @@ class SiliconeCapsuleApp(MenuMixin, AutoTestMixin, AnalysisMixin, QMainWindow):
         self.tab_dashboard_layout.setContentsMargins(0, 0, 0, 0)
 
         if HAS_DASHBOARD_PANEL:
+            if DashboardPanelPyQt is None:
+                raise RuntimeError("仪表盘面板模块导入失败")
             self.dashboard_panel = DashboardPanelPyQt(parent=self)
             if DashboardController is not None and self.dashboard_controller is None:
                 self.dashboard_controller = DashboardController()
@@ -1402,6 +1450,36 @@ class SiliconeCapsuleApp(MenuMixin, AutoTestMixin, AnalysisMixin, QMainWindow):
     def _on_dashboard_clicked(self) -> None:
         """切换到仪表盘标签页。"""
         self.tabs.setCurrentWidget(self.tab_dashboard)
+
+    def _setup_dlc_manager_tab(self) -> None:
+        """设置 DLC 管理标签页。"""
+        self.tab_dlc_manager = QWidget()
+        self.tab_dlc_manager_layout = QVBoxLayout(self.tab_dlc_manager)
+        self.tab_dlc_manager_layout.setContentsMargins(0, 0, 0, 0)
+
+        if HAS_DLC_MANAGER:
+            if DLCManagerPanelPyQt is None:
+                raise RuntimeError("DLC 管理面板模块导入失败")
+            self.dlc_manager_panel = DLCManagerPanelPyQt(parent=self)
+            if self.brain is not None:
+                self.dlc_manager_panel.set_brain(self.brain)
+            self.dlc_manager_panel.refresh_requested.connect(self._on_dlc_manager_refresh)
+            self.dlc_manager_panel.brain_init_requested.connect(self.start_ai_init_if_needed)
+            self.tab_dlc_manager_layout.addWidget(self.dlc_manager_panel)
+        else:
+            placeholder = QLabel("DLC 管理模块不可用\n请确保 mca_core.dlc_manager_panel_pyqt 可正常导入")
+            placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            placeholder.setStyleSheet("color: #a0aec0; font-size: 14px;")
+            self.tab_dlc_manager_layout.addWidget(placeholder)
+
+    def _on_dlc_manager_clicked(self) -> None:
+        """切换到 DLC 管理标签页。"""
+        self.tabs.setCurrentWidget(self.tab_dlc_manager)
+
+    def _on_dlc_manager_refresh(self) -> None:
+        """DLC 管理面板请求刷新。"""
+        if hasattr(self, "dlc_manager_panel") and self.brain is not None:
+            self.dlc_manager_panel._refresh()
 
     def on_settings_clicked(self) -> None:
         """处理设置按钮点击。"""

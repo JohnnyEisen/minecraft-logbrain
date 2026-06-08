@@ -1,4 +1,7 @@
-"""Neural Workflow DLC: 训练/推理流水线管理。"""
+"""Neural Workflow DLC: 训练/推理流水线管理。
+
+v1.5.5: DI 集成 (config/audit)，版本号统一引用 __version__。
+"""
 from __future__ import annotations
 
 import logging
@@ -7,13 +10,14 @@ from typing import Any, Dict, List, Optional
 from pathlib import Path
 
 from brain_system import BrainCore, BrainDLC, BrainDLCType, DLCManifest
+from brain_system import __version__
 from brain_system.security import SafeSerializer
 
 class NeuralWorkflowDLC(BrainDLC):
     def get_manifest(self) -> DLCManifest:
         return DLCManifest(
             name="Neural Workflow Manager",
-            version="1.1.0",
+            version=__version__,
             author="Brain AI Systems",
             description="管理模型训练循环、检查点与推理流水线",
             dlc_type=BrainDLCType.MANAGER,
@@ -104,7 +108,7 @@ class NeuralWorkflowDLC(BrainDLC):
                     else:
                         try:
                             loss_val = float(d)
-                        except:
+                        except (TypeError, ValueError):
                             loss_val = 0.0
                 total_loss += loss_val
                 steps += 1
@@ -130,7 +134,7 @@ class NeuralWorkflowDLC(BrainDLC):
         if hasattr(model, "parameters"):
             try:
                 params = [p.data for p in model.parameters()]
-            except:
+            except (AttributeError, TypeError):
                 params = []
         
         data_bytes = SafeSerializer.serialize({"params": params}, format="json")

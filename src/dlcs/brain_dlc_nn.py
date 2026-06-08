@@ -1,4 +1,7 @@
-"""Neural Network DLC: 算子与自动微分。"""
+"""Neural Network DLC: 算子与自动微分。
+
+v1.5.5: DI 集成 (config/audit)，版本号统一引用 __version__。
+"""
 from __future__ import annotations
 
 import logging
@@ -6,6 +9,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Sequence
 import collections
 
 from brain_system import BrainCore, BrainDLC, BrainDLCType, DLCManifest
+from brain_system import __version__
 from brain_system.utils import optional_import
 
 # 辅助类：Autograd 节点
@@ -78,8 +82,8 @@ class Function:
         self.outputs: List[TensorNode] = []
         self.generation = 0
 
-    def __call__(self, *inputs: TensorNode) -> TensorNode:
-        self.inputs = inputs
+    def __call__(self, *inputs: TensorNode) -> TensorNode | tuple[TensorNode, ...]:
+        self.inputs = list(inputs)
         self.generation = max((x.generation for x in inputs), default=0)
         
         # Unpack data
@@ -179,7 +183,7 @@ class NeuralNetworkOperatorsDLC(BrainDLC):
     def get_manifest(self) -> DLCManifest:
         return DLCManifest(
             name="Neural Network Operators",
-            version="1.1.0",
+            version=__version__,
             author="Brain AI Systems",
             description="提供基础神经网络算子与简易 Autograd",
             dlc_type=BrainDLCType.PROCESSOR,
