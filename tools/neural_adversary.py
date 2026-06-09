@@ -168,7 +168,7 @@ class NeuralAdversaryEngine:
     def load(self, path: str = "adversary_model.pth"):
         if self.backend == "torch" and self.torch_model is not None and os.path.exists(path):
             try:
-                self.torch_model.load_state_dict(torch.load(path, map_location=self.device))  # type: ignore[union-attr]
+                self.torch_model.load_state_dict(torch.load(path, map_location=self.device, weights_only=True))  # type: ignore[union-attr]
                 print(f"[NeuralAdversary] Weights loaded: {path}")
             except Exception as e:
                 print(f"[NeuralAdversary] Failed to load weights: {e}")

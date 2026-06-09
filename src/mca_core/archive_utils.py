@@ -237,7 +237,7 @@ def _extract_tar(path: str, dest_dir: str) -> ArchiveResult:
 
 
 def _extract_7z(path: str, dest_dir: str) -> ArchiveResult:
-    """解压 7z 文件（需要 py7zr 库）。
+    """解压 7z 文件（需要 py7zr 库）。逐文件安全提取。
 
     Args:
         path: 7z 文件路径
@@ -255,38 +255,44 @@ def _extract_7z(path: str, dest_dir: str) -> ArchiveResult:
 
     try:
         with py7zr.SevenZipFile(path, 'r') as szf:
-            # 检查文件数
             file_list = szf.getnames()
             if len(file_list) > _MAX_FILES_IN_ARCHIVE:
                 result.errors.append(f"压缩文件数({len(file_list)})超过上限({_MAX_FILES_IN_ARCHIVE})")
                 return result
 
-            # 安全检查：路径遍历
-            for filename in file_list:
-                check_path = os.path.join(dest_dir, filename)
-                if not _is_within_directory(dest_dir, check_path):
-                    result.errors.append(f"路径遍历攻击检测: {filename}")
-                    return result
-
-            try:
-                szf.extractall(dest_dir)
-            except Exception as e:
-                result.errors.append(f"7z 提取失败: {e}")
-                return result
-
-            # 收集提取的文件
             extracted_bytes = 0
-            for root, _, files in os.walk(dest_dir):
-                for f in files:
-                    fp = os.path.join(root, f)
-                    try:
-                        size = os.path.getsize(fp)
+            for filename in file_list:
+                # 路径遍历安全检查
+                member_path = os.path.join(dest_dir, filename)
+                if not _is_within_directory(dest_dir, member_path):
+                    result.errors.append(f"路径遍历攻击检测: {filename}")
+                    continue
+
+                # 大小检查（7z 中无法预知单文件大小，解压后检查）
+                if extracted_bytes > _MAX_TOTAL_EXTRACTED:
+                    result.errors.append("提取总大小超过上限")
+                    break
+
+                os.makedirs(os.path.dirname(member_path), exist_ok=True)
+
+                try:
+                    szf.extract(dest_dir, targets=[filename])
+                    # 检查是否解压出符号链接绕过
+                    if os.path.islink(member_path):
+                        resolved = os.path.realpath(member_path)
+                        if not _is_within_directory(dest_dir, resolved):
+                            os.unlink(member_path)
+                            result.errors.append(f"符号链接遍历攻击: {filename}")
+                            continue
+                    if os.path.isfile(member_path):
+                        size = os.path.getsize(member_path)
                         if size > _MAX_SINGLE_FILE_SIZE:
+                            os.remove(member_path)
                             continue
                         extracted_bytes += size
-                        result.extracted_files.append(fp)
-                    except OSError:
-                        continue
+                        result.extracted_files.append(member_path)
+                except Exception as e:
+                    logger.debug(f"提取文件失败: {filename}: {e}")
 
             result.total_extracted_bytes = extracted_bytes
     except Exception as e:
@@ -296,7 +302,7 @@ def _extract_7z(path: str, dest_dir: str) -> ArchiveResult:
 
 
 def _extract_rar(path: str, dest_dir: str) -> ArchiveResult:
-    """解压 rar 文件（需要 rarfile 库或 unrar 工具）。
+    """解压 rar 文件（需要 rarfile 库或 unrar 工具）。逐文件安全提取。
 
     Args:
         path: rar 文件路径
@@ -319,32 +325,39 @@ def _extract_rar(path: str, dest_dir: str) -> ArchiveResult:
                 result.errors.append(f"压缩文件数({len(info_list)})超过上限({_MAX_FILES_IN_ARCHIVE})")
                 return result
 
-            # 安全检查
-            for info in info_list:
-                check_path = os.path.join(dest_dir, info.filename)
-                if not _is_within_directory(dest_dir, check_path):
-                    result.errors.append(f"路径遍历攻击检测: {info.filename}")
-                    return result
-
-            try:
-                rf.extractall(dest_dir)
-            except Exception as e:
-                result.errors.append(f"RAR 提取失败: {e}")
-                return result
-
-            # 收集提取的文件
             extracted_bytes = 0
-            for root, _, files in os.walk(dest_dir):
-                for f in files:
-                    fp = os.path.join(root, f)
-                    try:
-                        size = os.path.getsize(fp)
-                        if size > _MAX_SINGLE_FILE_SIZE:
+            for info in info_list:
+                if info.isdir():
+                    continue
+
+                # 路径遍历安全检查
+                member_path = os.path.join(dest_dir, info.filename)
+                if not _is_within_directory(dest_dir, member_path):
+                    result.errors.append(f"路径遍历攻击检测: {info.filename}")
+                    continue
+
+                # 大小检查
+                if info.file_size > _MAX_SINGLE_FILE_SIZE:
+                    continue
+                if extracted_bytes + info.file_size > _MAX_TOTAL_EXTRACTED:
+                    result.errors.append("提取总大小超过上限")
+                    break
+
+                os.makedirs(os.path.dirname(member_path), exist_ok=True)
+
+                try:
+                    rf.extract(info, dest_dir)
+                    # 检查符号链接遍历攻击
+                    if os.path.islink(member_path):
+                        resolved = os.path.realpath(member_path)
+                        if not _is_within_directory(dest_dir, resolved):
+                            os.unlink(member_path)
+                            result.errors.append(f"符号链接遍历攻击: {info.filename}")
                             continue
-                        extracted_bytes += size
-                        result.extracted_files.append(fp)
-                    except OSError:
-                        continue
+                    extracted_bytes += info.file_size
+                    result.extracted_files.append(member_path)
+                except Exception as e:
+                    logger.debug(f"提取文件失败: {info.filename}: {e}")
 
             result.total_extracted_bytes = extracted_bytes
     except Exception as e:
