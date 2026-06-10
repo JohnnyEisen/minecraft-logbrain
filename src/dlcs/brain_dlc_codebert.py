@@ -80,7 +80,7 @@ class CodeBertDLC(BrainDLC):
     def get_manifest(self) -> DLCManifest:
         return DLCManifest(
             name="Semantic Engine (MiniLM + 7-Optimizations)",
-            version="2.0.0",
+            version=__version__,
             author="Brain AI Systems",
             description="基于 MiniLM + 注意力池化 + Int8量化 + CrossEncoder + Matryoshka + mHC + AttnRes + 鲁棒聚合 的语义引擎。",
             dlc_type=BrainDLCType.PROCESSOR,
@@ -192,9 +192,11 @@ class CodeBertDLC(BrainDLC):
                     self._use_int8 = False
 
             # 初始化注意力池化参数
+            # BUG-C01 修复: .to() 返回新 tensor，必须赋值
             hidden_size = self.model.config.hidden_size
-            self._attn_pool_query = torch.nn.Parameter(torch.randn(hidden_size))
-            self._attn_pool_query.to(self.device)
+            self._attn_pool_query = torch.nn.Parameter(
+                torch.randn(hidden_size, device=self.device)
+            )
             logging.info("注意力加权池化 (Attention Pooling) 已启用")
 
             self._is_ready = True
@@ -371,11 +373,14 @@ class CodeBertDLC(BrainDLC):
 
         return output
 
-    def shutdown(self):
+    def _pre_shutdown(self):
+        """释放 GPU/内存资源（在 disable() 和 shutdown() 时均会调用）。"""
         if self.model:
             del self.model
+            self.model = None
         if self.tokenizer:
             del self.tokenizer
+            self.tokenizer = None
         if self._cross_encoder:
             del self._cross_encoder
             self._cross_encoder_ready = False
@@ -396,6 +401,10 @@ class CodeBertDLC(BrainDLC):
         if torch and torch.cuda.is_available():
             torch.cuda.empty_cache()
 
+    def shutdown(self):
+        """关闭 DLC，调用基类生命周期 + GPU 资源释放。"""
+        super().shutdown()
+
     def provide_computational_units(self) -> dict[str, Any]:
         return {
             "encode_text": self.encode_text,
@@ -414,7 +423,7 @@ class CodeBertDLC(BrainDLC):
         2. [注意力池化] 加权 token 聚合
         3. [AttnRes] FFN 残差增强
         4. [mHC] Linear + LayerNorm 残差
-        5. [鲁棒聚合] 重置缓冲区
+        5. [鲁棒聚合] Trimmed Mean + Welsch 加权
         6. [Matryoshka] 维度截断（如果 output_dim < 768）
         7. L2 归一化
 
@@ -426,8 +435,8 @@ class CodeBertDLC(BrainDLC):
         if not self._is_ready:
             return None
 
-        # 每次独立分析前重置状态，防止跨日志语义污染
-        self._robust_agg_buffer.clear()
+        # BUG-C05 修复: 不再每调用清零 —— 鲁棒聚合依赖跨调用的历史缓冲区
+        # 改为提供显式 reset_robust_buffer() 方法供需要隔离的场景使用
 
         dim = output_dim if output_dim > 0 else self._output_dim
 
@@ -499,7 +508,8 @@ class CodeBertDLC(BrainDLC):
         scale = math.sqrt(hidden_size)
 
         # 计算注意力分数: (batch, seq_len, hidden) @ (hidden,) → (batch, seq_len)
-        scores = torch.matmul(token_embeddings, self._attn_pool_query.to(token_embeddings.device)) / scale
+        # BUG-C01 修复: 参数已在初始化时置于正确设备，无需每调用拷贝
+        scores = torch.matmul(token_embeddings, self._attn_pool_query) / scale
 
         # 对 padding token 设置 -inf
         mask = attention_mask.float()

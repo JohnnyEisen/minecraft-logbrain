@@ -44,13 +44,29 @@ def create_app(brain: Any):
     except Exception:
         pass  # 补丁 API 可选
 
-    # 安全头中间件 (VULN-006)
+    # 安全头中间件 (VULN-006 + CSRF 保护)
     @app.middleware("http")
     async def add_security_headers(request: Request, call_next):
         response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["Server"] = ""
+        # VULN-006: CSRF 保护 - 状态变更方法需要 Origin 验证
+        if request.method in ("POST", "PUT", "PATCH", "DELETE"):
+            origin = request.headers.get("Origin", "")
+            host = request.headers.get("Host", "")
+            if origin and host and not origin.endswith(host):
+                # 跨站请求，需验证 CSRF token
+                csrf_header = request.headers.get("X-CSRF-Token", "")
+                csrf_cookie = request.cookies.get("csrf_token", "")
+                if not csrf_header or csrf_header != csrf_cookie:
+                    from fastapi.responses import JSONResponse
+                    return JSONResponse(
+                        status_code=403,
+                        content={"error": "CSRF validation failed"},
+                    )
         return response
 
     @app.get("/health")

@@ -5,7 +5,25 @@
 
 ---
 
-## v1.5.5 — Bug 修复汇总
+## v2.1.0 — Bug 修复汇总
+
+| # | 来源 | 问题 | 影响版本 | 说明 | 修复方案 |
+|---|------|------|----------|------|----------|
+| 1 | 🔵 | BrainCore 巨型类 | v1.5.0 ~ v2.0.0 | 1302 行难以维护，职责混乱 | 提取 DLCManager 子模块（303 行），DLC 方法改为委托桩 |
+| 2 | 🔵 | EventBus 排序开销 | v1.5.0 ~ v2.0.0 | 每次 subscribe 立即 O(n log n) 排序 | 改为惰性排序，publish 时才触发 |
+| 3 | 🔵 | Registry 导入级联 | v1.5.0 ~ v2.0.0 | 导入 registry 时立即 load_builtins | 改为懒加载，首次调用时触发 |
+| 4 | 🔵 | 插件系统静默放行 | v2.0.0 | `_validate_imports` 返回 True 放行违禁模块 | 返回值改为 `list[str]` 违规列表 |
+| 5 | 🔵 | 插件重复 hash 计算 | v2.0.0 | `_validate_plugin_code` 和调用方各读一次文件 | 返回 hash，调用方复用 |
+| 6 | 🔵 | DistributedComputing 竞态 | v2.0.0 | stop_workers 先设 is_running=False 再发毒丸，worker 阻塞 | 先发毒丸再设标志 |
+| 7 | 🔵 | DLC disable 不释放 GPU | v2.0.0 | disable() 未调用 shutdown 钩子 | 改为调用 _pre_shutdown/_post_shutdown |
+| 8 | 🔵 | CodeBertDLC 绕过基类 | v2.0.0 | shutdown() 直接清理 GPU，未调用 super() | 清理移入 _pre_shutdown |
+| 9 | 🔵 | Discovery sys.modules 泄漏 | v2.0.0 | load_dlc_classes_from_file 临时模块未清理 | try/finally 中 pop |
+| 10 | 🔵 | 沙箱 __import__ 漏洞 | v2.0.0 | RESTRICTED 级别允许 __import__ | 从 RESTRICTED_BUILTINS 移除 |
+| 11 | 🔵 | 沙箱 open() 分配脆弱 | v2.0.0 | elif 分支重复，顺序依赖 | 用 pop 明确禁止，消除重复 |
+
+---
+
+## v2.0.0 — Bug 修复汇总
 
 | # | 来源 | 问题 | 影响版本 | 说明 | 修复方案 |
 |---|------|------|----------|------|----------|

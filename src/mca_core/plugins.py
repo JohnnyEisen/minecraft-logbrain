@@ -62,23 +62,23 @@ BYPASS_PATTERNS: List[tuple[str, str]] = [
     (r'b64decode', 'Base64 decode'),
     (r'b64encode', 'Base64 encode'),
     # Indirect calls
-    (r'getattr\s*\(\s*[^,]+,\s*["\']', 'getattr dynamic attribute access'),
-    (r'getattr\(__builtins__,', 'getattr dangerous function call'),
-    (r'__builtins__\[', '__builtins__ dynamic access'),
+    (r'getattr\s*\(\s*[^,]{1,30},\s*["\']', 'getattr dynamic attribute access'),
+    (r'getattr\s*\(\s*__builtins__\s*,', 'getattr dangerous function call'),
+    (r'__builtins__\s*\[', '__builtins__ dynamic access'),
     # chr/ord obfuscation
-    (r'chr\s*\(\s*\d+\s*\)', 'chr() character encoding'),
+    (r'chr\s*\(\s*\d{1,5}\s*\)', 'chr() character encoding'),
     (r'ord\s*\(\s*["\']', 'ord() character encoding'),
     (r'\\x[0-9a-fA-F]{2}', 'Hex escape sequence'),
     (r'\\u[0-9a-fA-F]{4}', 'Unicode escape sequence'),
     # compile exploitation
     (r'compile\s*\(', 'Dynamic code compile'),
     # Type manipulation
-    (r'type\s*\(\s*[^)]+\s*\)\s*\.', 'Type manipulation'),
-    (r'\. __', 'Dunder attribute access via string'),
-    # Lambda abuse
-    (r'lambda\s*:\s*[^,\n]+(?:eval|exec|import|open)', 'Lambda with dangerous call'),
-    # Format string abuse
-    (r'f["\'].*\{.*\}.*["\'].*(?:eval|exec|import|open|system)', 'F-string with dangerous pattern'),
+    (r'type\s*\(\s*[^)]{1,50}\s*\)\s*\.', 'Type manipulation'),
+    (r'\.\s*__', 'Dunder attribute access via string'),
+    # Lambda abuse - VULN-004: limit backtracking with {1,80} bounds
+    (r'lambda\s*:\s*[^,\n]{1,80}(?:eval|exec|import|open)', 'Lambda with dangerous call'),
+    # Format string abuse - VULN-004: use .{0,200}? lazy quantifiers
+    (r'f["\'].{0,200}?\{.{0,200}?\}.{0,200}?["\'].{0,200}?(?:eval|exec|import|open|system)', 'F-string with dangerous pattern'),
     # __getattribute__ abuse
     (r'__getattribute__', '__getattribute__ access'),
     # vars/locals/globals abuse
@@ -187,11 +187,12 @@ def _check_ast_for_dangerous_calls(tree: ast.AST, filename: str) -> List[str]:
     return dangerous_calls
 
 
-def _validate_plugin_code(filepath: str) -> bool:
+def _validate_plugin_code(filepath: str) -> str:
     """
     Validate plugin code for security issues - ENHANCED VERSION.
     
-    Returns True if safe, raises PluginSecurityError if dangerous.
+    Returns the file's SHA-256 hash (for integrity tracking).
+    Raises PluginSecurityError if code is dangerous.
     Fix V-002: Add bypass detection
     """
     try:
@@ -248,7 +249,7 @@ def _validate_plugin_code(filepath: str) -> bool:
         file_hash = hashlib.sha256(code.encode()).hexdigest()
         logger.debug(f'Plugin {filename} hash: {file_hash}')
         
-        return True
+        return file_hash
         
     except PluginSecurityError:
         raise
@@ -256,10 +257,14 @@ def _validate_plugin_code(filepath: str) -> bool:
         raise PluginSecurityError(f'Validation failed: {e}')
 
 
-def _validate_imports(filepath: str) -> bool:
+def _validate_imports(filepath: str) -> list[str]:
     """
     Validate that plugin only imports allowed modules.
+    
+    Returns:
+        list of disallowed module names (empty if all OK)
     """
+    errors: list[str] = []
     try:
         with open(filepath, 'r', encoding='utf-8') as f:
             code = f.read()
@@ -271,25 +276,19 @@ def _validate_imports(filepath: str) -> bool:
                 for alias in node.names:
                     module = alias.name.split('.')[0]
                     if module not in ALLOWED_IMPORTS:
-                        logger.warning(
-                            f'Plugin {os.path.basename(filepath)} '
-                            f'imports disallowed module: {module}'
-                        )
+                        errors.append(f"disallowed import '{module}'")
                         
             elif isinstance(node, ast.ImportFrom):
                 if node.module:
                     module = node.module.split('.')[0]
                     if module not in ALLOWED_IMPORTS:
-                        logger.warning(
-                            f'Plugin {os.path.basename(filepath)} '
-                            f'imports from disallowed module: {module}'
-                        )
+                        errors.append(f"disallowed import from '{module}'")
         
-        return True
+        return errors
         
     except Exception as e:
-        logger.warning(f'Import validation failed: {e}')
-        return True  # Don't block on validation errors
+        errors.append(f"import validation failed: {e}")
+        return errors
 
 
 class SecurePluginRegistry:
@@ -332,8 +331,13 @@ class SecurePluginRegistry:
             
             try:
                 # ENHANCED Security validation (V-002 fix)
-                _validate_plugin_code(filepath)
-                _validate_imports(filepath)
+                file_hash = _validate_plugin_code(filepath)
+                import_errors = _validate_imports(filepath)
+                if import_errors:
+                    logger.warning(
+                        'Plugin %s has disallowed imports: %s',
+                        filename, ', '.join(import_errors)
+                    )
                 
                 # Load module
                 spec = importlib.util.spec_from_file_location(
@@ -345,10 +349,7 @@ class SecurePluginRegistry:
                     
                     if hasattr(mod, 'plugin_entry'):
                         self.register(mod.plugin_entry)
-                        
-                        # Store hash and path for integrity checking
-                        with open(filepath, 'rb') as f:
-                            file_hash = hashlib.sha256(f.read()).hexdigest()
+
                         self._plugin_hashes[filename] = file_hash
                         self._plugin_paths[filename] = filepath
                         

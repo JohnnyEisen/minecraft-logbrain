@@ -6,18 +6,26 @@ import os
 def _sanitize_path(text: str) -> str:
     """脱敏文件系统路径，防止用户个人信息泄露到 AI API。
 
+    VULN-009 修复: 扩展路径模式覆盖更多变体。
+
     Args:
         text: 可能包含文件路径的文本
 
     Returns:
         脱敏后的文本
     """
-    # 替换 Windows 绝对路径中的用户名部分
-    text = re.sub(r'C:\\Users\\[^\\]+', r'C:\\Users\\<user>', text)
+    # 替换 Windows 任意盘符的绝对路径中的用户名部分
+    text = re.sub(r'[A-Za-z]:\\Users\\[^\\\s]+', r'<win_user_path>', text)
     # 替换 Unix 家目录路径
     text = re.sub(r'/home/[^/\s]+', r'/home/<user>', text)
-    # 替换 .minecraft 路径中的盘符
-    text = re.sub(r'[A-Z]:\\(?:Users\\[^\\]+\\AppData\\Roaming\\)?\.minecraft', r'<mc_dir>', text)
+    # 替换 .minecraft 路径
+    text = re.sub(r'[A-Za-z]:\\(?:Users\\[^\\]+\\AppData\\Roaming\\)?\.minecraft[^\s]*', r'<mc_dir>', text)
+    # 替换 %APPDATA% 展开后的路径
+    text = re.sub(r'C:\\Users\\[^\\]+\\AppData\\Roaming[^\s]*', r'<appdata_path>', text)
+    # 替换 /opt 下的用户特定路径
+    text = re.sub(r'/opt/[^/\s]+/[^/\s]+', r'/opt/<user>/<dir>', text)
+    # 替换 /var/lib 下的用户特定路径
+    text = re.sub(r'/var/lib/[^/\s]+/[^/\s]+', r'/var/lib/<user>/<dir>', text)
     return text
 
 

@@ -71,8 +71,6 @@ a = Analysis(
         'mca_core.detectors.mixin_conflicts',
         'mca_core.services',
         'mca_core.controllers',
-        'mca_core.ui',
-        'mca_core.ui.components',
         'mca_core.main_window_mixins',
     ],
     hookspath=[],
@@ -110,7 +108,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['app_icon.ico'],
+    icon=['assets/app_icon.ico'],
 )
 
 coll = COLLECT(

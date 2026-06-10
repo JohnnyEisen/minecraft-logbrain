@@ -8,7 +8,7 @@ import re
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from datetime import datetime
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Protocol
 
 from mca_core.pattern_repository import get_repository, PatternRepository
 from mca_core.regex_cache import RegexCache
@@ -17,6 +17,103 @@ logger = logging.getLogger(__name__)
 
 DETECTOR_TIMEOUT_SECONDS = 15.0
 MAX_PARALLEL_WORKERS = 8
+
+
+class DetectorExecutionStrategy(Protocol):
+    """检测器执行策略接口（策略模式）。
+
+    允许通过依赖注入替换不同的执行策略，例如：
+        - 线程池并行执行（默认）
+        - 串行执行（测试/调试）
+        - 分布式执行（DLC 集成）
+    """
+
+    def execute(
+        self,
+        detectors: list[Any],
+        crash_log: str,
+        context: Any,
+        *,
+        run_single: Callable[[Any, str, Any], tuple[bool, Optional[str]]],
+        notify_progress: Optional[Callable[[float, str], None]] = None,
+        detector_timeout: float = DETECTOR_TIMEOUT_SECONDS,
+    ) -> list[dict[str, Any]]:
+        """执行检测器列表，返回结果。
+
+        Args:
+            detectors: 检测器实例列表
+            crash_log: 崩溃日志内容
+            context: AnalysisContext 实例
+            run_single: 单检测器执行函数 (detector, crash_log, context) -> (success, error_msg)
+            notify_progress: 进度通知回调 (progress_float, message)
+            detector_timeout: 单个检测器超时时间（秒）
+
+        Returns:
+            检测结果列表
+        """
+        ...
+
+
+class ThreadPoolExecutionStrategy:
+    """默认线程池并行执行策略。"""
+
+    def __init__(self, max_workers: int = MAX_PARALLEL_WORKERS):
+        self._max_workers = max_workers
+        self._executor: Optional[ThreadPoolExecutor] = None
+
+    def _get_executor(self) -> ThreadPoolExecutor:
+        if self._executor is None:
+            from mca_core.threading_utils import ThreadPoolManager
+            self._executor = ThreadPoolManager.get_instance().get_pool(
+                "diagnostic", max_workers=self._max_workers
+            )
+        return self._executor
+
+    def execute(
+        self,
+        detectors: list[Any],
+        crash_log: str,
+        context: Any,
+        *,
+        run_single: Callable[[Any, str, Any], tuple[bool, Optional[str]]],
+        notify_progress: Optional[Callable[[float, str], None]] = None,
+        detector_timeout: float = DETECTOR_TIMEOUT_SECONDS,
+    ) -> list[dict[str, Any]]:
+        total = len(detectors)
+        if total == 0:
+            return []
+
+        if notify_progress:
+            notify_progress(0.0, f"0/{total} 检测器")
+
+        failed_detectors: list[str] = []
+        executor = self._get_executor()
+        futures: dict[str, Any] = {}
+
+        for detector in detectors:
+            name = detector.get_name()
+            futures[name] = executor.submit(run_single, detector, crash_log, context)
+
+        completed = 0
+        for name, future in futures.items():
+            try:
+                success, error_msg = future.result(timeout=detector_timeout)
+                if not success and error_msg:
+                    failed_detectors.append(f"{name}: {error_msg}")
+            except FutureTimeoutError:
+                logger.warning(f"Detector {name} timed out after {detector_timeout}s")
+                failed_detectors.append(f"{name}: timeout > {detector_timeout}s")
+            except Exception as e:
+                logger.warning(f"Detector {name} failed: {e}")
+                failed_detectors.append(f"{name}: {e}")
+            completed += 1
+            if notify_progress:
+                notify_progress(
+                    completed / max(total, 1),
+                    f"{completed}/{total} 检测器完成" if completed < total else "分析完成"
+                )
+
+        return DiagnosticEngine._convert_context_to_results(context, crash_log)
 
 
 class DiagnosticEngine:
@@ -29,6 +126,7 @@ class DiagnosticEngine:
         - 仪表盘集成: 记录每次检测的耗时和结果供实时监控
         - 单检测器超时: 防止慢检测器阻塞整个流程
         - 置信度评分: 按信号强度区分结果重要性
+        - 策略模式: 支持自定义检测器执行策略（串行/并行/分布式）
 
     DI 支持:
         支持通过 DI 注入 ConfigManager / AuditTrail / EventBus，
@@ -43,6 +141,7 @@ class DiagnosticEngine:
         config: Any = None,
         audit: Any = None,
         event_bus: Any = None,
+        execution_strategy: DetectorExecutionStrategy | None = None,
     ) -> None:
         self.data_dir = data_dir
         if repo:
@@ -58,6 +157,7 @@ class DiagnosticEngine:
         self._config = config
         self._audit = audit
         self._event_bus = event_bus
+        self._execution_strategy = execution_strategy or ThreadPoolExecutionStrategy()
 
         cache_size = 128
         cache_ttl = 600.0
@@ -261,10 +361,9 @@ class DiagnosticEngine:
     def _analyze_with_detectors_parallel(
         self, crash_log: str, host: Any = None
     ) -> list[dict[str, Any]]:
-        """并行执行所有检测器。
+        """使用执行策略运行所有检测器。
 
-        每个检测器在独立线程中运行，带超时保护。
-        预筛阶段跳过不可能匹配的检测器。
+        委托至 self._execution_strategy，默认使用 ThreadPoolExecutionStrategy。
         """
         if not self._detector_registry:
             return []
@@ -273,47 +372,15 @@ class DiagnosticEngine:
 
         context = AnalysisContext(analyzer=host, crash_log=crash_log)
         detectors = self._detector_registry.list()
-        total = len(detectors)
 
-        if total == 0:
-            return []
-
-        self._notify_progress(0.0, f"0/{total} 检测器")
-
-        failed_detectors: list[str] = []
-        executor = self._get_executor()
-        futures: dict[str, Any] = {}
-
-        for detector in detectors:
-            name = detector.get_name()
-            futures[name] = executor.submit(
-                self._run_single_detector, detector, crash_log, context
-            )
-
-        completed = 0
-        for name, future in futures.items():
-            try:
-                success, error_msg = future.result(timeout=self.detector_timeout)
-                if not success and error_msg:
-                    failed_detectors.append(f"{name}: {error_msg}")
-            except FutureTimeoutError:
-                logger.warning(f"Detector {name} timed out after {self.detector_timeout}s")
-                failed_detectors.append(f"{name}: timeout > {self.detector_timeout}s")
-            except Exception as e:
-                logger.warning(f"Detector {name} failed: {e}")
-                failed_detectors.append(f"{name}: {e}")
-            completed += 1
-            self._notify_progress(
-                completed / max(total, 1),
-                f"{completed}/{total} 检测器完成" if completed < total else "分析完成"
-            )
-
-        if failed_detectors and host and hasattr(host, "analysis_results"):
-            host.analysis_results.append(
-                f"[DiagnosticEngine] 以下检测器执行异常（已跳过）: {', '.join(failed_detectors)}"
-            )
-
-        return self._convert_context_to_results(context)
+        return self._execution_strategy.execute(
+            detectors=detectors,
+            crash_log=crash_log,
+            context=context,
+            run_single=self._run_single_detector,
+            notify_progress=self._notify_progress,
+            detector_timeout=self.detector_timeout,
+        )
 
     def _run_single_detector(
         self, detector: Any, crash_log: str, context: Any
@@ -339,7 +406,7 @@ class DiagnosticEngine:
             return False, str(e)
 
     @staticmethod
-    def _convert_context_to_results(context: Any) -> list[dict[str, Any]]:
+    def _convert_context_to_results(context: Any, crash_log: str = "") -> list[dict[str, Any]]:
         from mca_core.detectors.contracts import DetectionResult
         results: list[dict[str, Any]] = []
         for result in context.results:
@@ -355,6 +422,16 @@ class DiagnosticEngine:
                 "detector": result.detector,
                 "confidence": result.confidence,
             })
+        # BUG-004 修复: 检测器路径也生成 AI prompt，与正则回退路径保持一致
+        if results and crash_log:
+            try:
+                from mca_core.prompt_generator import PromptGenerator
+                ai_prompt = PromptGenerator.generate_prompt(crash_log)
+                for r in results:
+                    if "ai_prompt" not in r:
+                        r["ai_prompt"] = ai_prompt
+            except Exception:
+                pass
         return results
 
     def _analyze_with_regex(self, crash_log: str) -> list[dict[str, Any]]:

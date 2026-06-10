@@ -81,6 +81,43 @@ class PatchDownloader:
         self._active = False
         return False, f"下载失败 (已重试 {self._max_retries} 次): {last_error}"
 
+    @staticmethod
+    def _validate_url(url: str) -> tuple[bool, str]:
+        """VULN-002 修复: URL 协议白名单 + IP 验证，防止 SSRF。
+
+        仅允许 http/https 协议。对 IP 地址做精确的内网检查，
+        避免 startswith 误杀合法域名（如 127.example.com）。
+        """
+        import ipaddress
+        from urllib.parse import urlparse
+
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            return False, f"不允许的协议: {parsed.scheme}（仅允许 http/https）"
+        if not parsed.hostname:
+            return False, "URL 缺少主机名"
+
+        host = parsed.hostname
+        host_lower = host.lower()
+
+        # 精确匹配已知保留主机名
+        if host_lower in ("localhost", "0.0.0.0", "[::1]"):
+            return False, f"不允许访问内网地址: {host}"
+
+        # BUG-001 修复: 用 ipaddress 精确判断 IP 是否为内网地址
+        # 避免 startswith 误杀合法域名
+        try:
+            ip = ipaddress.ip_address(host)
+            if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+                return False, f"不允许访问内网地址: {host}"
+            if ip.is_multicast:
+                return False, f"不允许访问组播地址: {host}"
+        except ValueError:
+            # 不是 IP 地址，是域名 — 允许通过
+            pass
+
+        return True, ""
+
     def _download_once(
         self,
         url: str,
@@ -88,6 +125,11 @@ class PatchDownloader:
         expected_sha256: Optional[str],
         progress_callback: Optional[Callable[[int, int], None]],
     ) -> tuple[bool, str]:
+        # ── VULN-002: URL 安全验证 ──
+        ok, err = self._validate_url(url)
+        if not ok:
+            return False, f"URL 验证失败: {err}"
+
         os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
 
         req = urllib.request.Request(url, headers={"User-Agent": "MCA-Brain-PatchManager/2.0"})

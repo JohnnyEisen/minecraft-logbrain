@@ -16,11 +16,13 @@ from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Reque
 from fastapi.responses import JSONResponse
 
 # 确保项目路径正确
+# VULN-011 修复: 使用 append 而非 insert(0) 降低模块劫持风险
 _project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if _project_root not in sys.path:
-    sys.path.insert(0, _project_root)
-if os.path.join(_project_root, "src") not in sys.path:
-    sys.path.insert(0, os.path.join(_project_root, "src"))
+    sys.path.append(_project_root)
+_src_path = os.path.join(_project_root, "src")
+if _src_path not in sys.path:
+    sys.path.append(_src_path)
 
 from .auth import verify_auth
 from mca_core.patch_manager import PatchManager
@@ -54,9 +56,22 @@ def _ok(data=None, **extra):
     return JSONResponse(body)
 
 
+def _safe_error_message(message: str) -> str:
+    """VULN-012 修复: 脱敏错误消息中的内部路径。"""
+    import re
+    msg = str(message)
+    # 移除项目绝对路径
+    msg = re.sub(r'[A-Za-z]:\\[^\s]*?MCA-Brain-System[^\s,;:]*', '[project_path]', msg)
+    msg = re.sub(r'/[^\s]*?MCA-Brain-System[^\s,;:]*', '[project_path]', msg)
+    # 移除 Windows 用户路径
+    msg = re.sub(r'[A-Za-z]:\\Users\\[^\\\s]+', '[user_path]', msg)
+    return msg
+
+
 def _error(message: str, status: int = 400):
     """构造错误响应。"""
-    return JSONResponse({"ok": False, "message": message}, status_code=status)
+    safe_msg = _safe_error_message(message)
+    return JSONResponse({"ok": False, "message": safe_msg}, status_code=status)
 
 
 # ═══════════════════════════════════════════════

@@ -29,7 +29,11 @@ def compute_file_hash(filepath: str) -> str:
 
 
 def compute_content_hash(content: bytes) -> str:
-    """计算内容的 SHA-256 哈希。"""
+    """计算内容的 SHA-256 哈希。
+
+    WARNING: 仅用于文件完整性校验，不适用于密码哈希。
+    密码场景请使用 bcrypt / argon2。
+    """
     return hashlib.sha256(content).hexdigest()
 
 

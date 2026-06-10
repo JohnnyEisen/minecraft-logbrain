@@ -74,9 +74,16 @@ class TestPatchSandbox:
             "def apply():\n    exec('x=1')\n", "exec", PermissionLevel.ADMIN)
         assert not r.success, r.message
 
-    def test_admin_os_allowed(self):
+    def test_admin_os_import_blocked(self):
+        """VULN-003 修复: admin 级别也应阻止 os/subprocess 等危险模块导入。"""
         r = execute_patch_sandboxed(
             "import os\ndef apply():\n    return os.getcwd()\n", "admin", PermissionLevel.ADMIN)
+        assert not r.success, f"os import should be blocked in sandbox: {r.message}"
+
+    def test_admin_safe_math_allowed(self):
+        """admin 级别允许白名单中的安全模块（如 math）。"""
+        r = execute_patch_sandboxed(
+            "import math\ndef apply():\n    return math.sqrt(16)\n", "admin_safe", PermissionLevel.ADMIN)
         assert r.success, r.message
 
     def test_syntax_error_caught(self):

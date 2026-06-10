@@ -206,9 +206,10 @@ def _classify_severity(text: str, cause_label: str = "") -> int:
             return SEV_HIGH
 
     # 5. 英文中危词汇
+    # BUG-C07 修复: "warn" 太泛（匹配所有 WARN 行），移除改用更精确词汇
     medium_keywords = [
-        "warn", "conflict", "version mismatch",
-        "duplicate", "missing mod", "not found"
+        "mod conflict", "version mismatch",
+        "duplicate", "missing mod", "not found", "deprecated"
     ]
     for kw in medium_keywords:
         if kw in low:

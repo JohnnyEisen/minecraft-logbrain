@@ -1,5 +1,5 @@
 # --- UI ---
-PySide6>=6.5.0
+PyQt6>=6.5.0
 # sv-ttk removed  # Dark theme
 # tkinterweb removed
 
@@ -26,4 +26,6 @@ numpy>=1.26.0
 
 # --- Compat ---
 tomli>=2.0.1; python_version < "3.11"
-networkx
+
+# --- Security ---
+idna>=3.15

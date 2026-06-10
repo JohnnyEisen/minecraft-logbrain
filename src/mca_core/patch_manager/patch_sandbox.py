@@ -43,7 +43,7 @@ _RESTRICTED_BUILTINS = frozenset({
     "StopAsyncIteration", "StopIteration", "SyntaxError", "SystemError",
     "TypeError", "UnboundLocalError", "UnicodeError", "ValueError",
     "ZeroDivisionError", "True", "False", "None", "Ellipsis",
-    "NotImplemented", "__build_class__", "__import__",
+    "NotImplemented", "__build_class__",
 })
 
 _STANDARD_BUILTINS = _RESTRICTED_BUILTINS | frozenset({
@@ -51,7 +51,7 @@ _STANDARD_BUILTINS = _RESTRICTED_BUILTINS | frozenset({
 })
 
 _ADMIN_DENIED = frozenset({
-    "exec", "eval", "compile",
+    "exec", "eval", "compile", "__import__",
 })
 
 
@@ -87,15 +87,11 @@ def _make_restricted_builtins(level: PermissionLevel) -> dict[str, Any]:
         if name in builtins.__dict__:
             safe[name] = builtins.__dict__[name]
 
-    # restricted 级别下包装 open 为只读
+    # RESTRICTED 级别下不允许任何 I/O
     if level == PermissionLevel.RESTRICTED:
-        safe["open"] = _safe_open_readonly
+        safe.pop("open", None)
     elif level == PermissionLevel.STANDARD:
         safe["open"] = _safe_open_readonly
-    elif level == PermissionLevel.ADMIN:
-        # admin 级别也拦截 exec/eval/compile
-        # 但保留 open 完整功能
-        pass
 
     # 所有级别禁止 exec/eval
     safe["exec"] = _blocked("exec()")
@@ -127,6 +123,33 @@ def _blocked(name: str):
     return _blocked_func
 
 
+# VULN-003 修复: 沙箱内允许导入的安全模块白名单
+_SANDBOX_SAFE_MODULES = frozenset({
+    "abc", "collections", "collections.abc", "copy", "dataclasses", "enum",
+    "functools", "hashlib", "hmac", "inspect", "io", "itertools",
+    "math", "numbers", "operator", "statistics", "string",
+    "textwrap", "typing", "typing_extensions", "uuid", "warnings", "weakref",
+    "json", "logging", "time", "datetime", "re", "pathlib",
+    "numpy", "matplotlib", "networkx",
+})
+
+
+def _safe_import(name, globals=None, locals=None, fromlist=(), level=0):
+    """VULN-003 修复: 沙箱安全导入钩子。
+
+    只允许导入白名单中的模块。禁止导入 os/subprocess/socket/ctypes 等。
+    禁止 `__import__` 逃逸沙箱。
+    """
+    base = name.split(".")[0]
+    full = name
+    if base not in _SANDBOX_SAFE_MODULES and full not in _SANDBOX_SAFE_MODULES:
+        raise ImportError(
+            f"沙箱安全限制: 不允许导入 '{name}'。"
+            f"仅允许导入白名单中的模块。"
+        )
+    return __import__(name, globals, locals, fromlist, level)
+
+
 def create_sandbox_globals(
     level: PermissionLevel = PermissionLevel.RESTRICTED,
     extra_globals: dict[str, Any] | None = None,
@@ -141,6 +164,9 @@ def create_sandbox_globals(
         受限的全局命名空间字典
     """
     sandbox_builtins = _make_restricted_builtins(level)
+
+    # VULN-003: 所有级别替换 __import__ 为安全导入钩子
+    sandbox_builtins["__import__"] = _safe_import
 
     sandbox = types.SimpleNamespace()
     sandbox.__builtins__ = sandbox_builtins

@@ -4,8 +4,8 @@ Secure Build Script - MCA Brain System
 Uses PyArmor to obfuscate code before packaging
 
 Usage:
-    python build_secure.py          # Normal build
-    python build_secure.py clean   # Clean build artifacts
+    python scripts/build/build_secure.py          # Normal build
+    python scripts/build/build_secure.py clean   # Clean build artifacts
 """
 
 import os

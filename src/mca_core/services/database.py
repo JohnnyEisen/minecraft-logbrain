@@ -32,7 +32,9 @@ class ConnectionPool:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA synchronous=NORMAL;")
-        conn.execute("PRAGMA read_uncommitted=ON;")
+        # VULN-010 修复: 关闭 read_uncommitted，WAL 模式本身支持读写并发
+        # 脏读可能导致分析结果不一致
+        conn.execute("PRAGMA read_uncommitted=OFF;")
         return conn
 
     def get(self) -> sqlite3.Connection:

@@ -11,7 +11,7 @@
   - Internally calls `install_env.bat`.
 
 - `Start_Repair.bat`
-  - Wrapper for `../repair_mca_env.py`.
+  - Wrapper for `repair_mca_env.py`.
   - Used when environment is partially broken and needs repair/reinstall logic.
 
 ## Supporting Scripts
@@ -25,4 +25,4 @@
 ## Notes
 
 - Prefer `install_env.bat` for first-time setup.
-- Use `python scripts/check_gpu.py` after installation to verify CUDA availability.
+- Use `python scripts/setup/check_gpu.py` after installation to verify CUDA availability.

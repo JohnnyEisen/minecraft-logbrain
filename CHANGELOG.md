@@ -1,15 +1,103 @@
 # Changelog
 
-说明：
-- 当前发布版本请看本文件顶部第一条版本记录。
-- 本文件是唯一的发布历史来源，其他文档中的版本号可能是历史阶段或模板占位。
+当前版本见顶部第一条。本文件是唯一发布历史来源。
 
 ---
 
-## v1.5.5 — TKinter→PyQt6 架构统一、补丁安全加固、检测器引擎跃升 (2026-06-08)
+## v2.1.1 — 安全纵深加固、算力 Bug 修复与工程卫生 (2026-06-11)
+
+### 安全 — 全仓渗透测试发现的 14 项漏洞全部修复
+
+| ID | 严重性 | 漏洞 | 修复 |
+|------|----------|------|------|
+| VULN-001 | CRITICAL | DLC 直接 `exec_module` 无安全验证 | `discovery.py` — AST 分析 + 危险调用/导入拦截 |
+| VULN-002 | CRITICAL | PatchDownloader SSRF（`file://` 等协议未过滤） | `patch_downloader.py` — scheme 白名单 + `ipaddress` 精确内网判断 |
+| VULN-003 | CRITICAL | Admin 沙箱 `__import__` 未拦截 → 任意命令执行 | `patch_sandbox.py` — 全局 `_safe_import` 白名单；`core.py` — API 拒 admin 上传 |
+| VULN-004 | HIGH | BYPASS_PATTERNS 正则回溯 ReDoS | `plugins.py` — `.*` → `.{0,200}?` 非贪婪限制 |
+| VULN-005 | HIGH | 补丁上传 TOCTOU 竞态 | `core.py` — 先 hash 后写入交叉比对 |
+| VULN-006 | HIGH | API 无 CSRF 保护 | `server.py` — Origin/X-CSRF-Token 中间件 |
+| VULN-007 | HIGH | Auth localhost 过度宽松 | `auth.py` — Host header 验证 + 未配置 token 警告 |
+| VULN-008 | HIGH | 下载路径 `../` 遍历注入 | `core.py` — basename + realpath 边界检查 |
+| VULN-009 | MEDIUM | 路径脱敏不完整 | `prompt_generator.py` — 扩展盘符/APPDATA/opt/var 模式 |
+| VULN-010 | MEDIUM | SQLite `read_uncommitted=ON` 脏读 | `database.py` — 改为 OFF |
+| VULN-011 | MEDIUM | `sys.path.insert(0)` 劫持风险 | `patch_api.py` — 改为 append |
+| VULN-012 | MEDIUM | 错误消息泄露内部路径 | `patch_api.py` — `_safe_error_message()` |
+| VULN-013 | LOW | `compute_content_hash` 用途不明 | `integrity.py` — 添加密码场景警告注释 |
+| VULN-014 | LOW | 日志无限增长 | 已有 10MB×5 轮转，无需额外修复 |
+
+详细报告：`docs/security/PENTEST_REPORT_v2.1.0_COMPREHENSIVE.md`
+
+### Fixed — 核心算力 Bug
+
+- **BUG-C01 — 注意力池化参数留 CPU**：`torch.nn.Parameter(...).to(device)` 返回值被丢弃（`.to()` 非原地操作），每次 `encode_text` 都 GPU↔CPU 拷贝。修复为 `torch.randn(..., device=self.device)`。
+- **BUG-C05 — 鲁棒聚合死代码**：`encode_text` 开头 `clear()` 缓冲区 → `_robust_aggregate` 内 `len(buffer) < 4` 永远成立。Welsch 加权/Trimmed Mean 从 v2.1.0 起从未生效。移除每调用清零，提供显式 `reset_robust_buffer()`。
+- **BUG-C07 — `"warn"` 子串过匹配**：`_classify_severity` 中 `"warn"` 匹配所有含 `"warning"/"WARN"` 的日志 → 正常日志误判 MEDIUM。改为精确词汇。
+- **BUG-001 — SSRF 修复的 startswith 误杀**：`startswith("127.")` 拦截 `127.example.com` 合法域名。改用 `ipaddress` 模块精确判断。
+- **BUG-002 — `publish_async` 线程池泄漏**：每次调用创建+销毁 `ThreadPoolExecutor`。改为复用单例后台线程。
+- **BUG-003 — `unsubscribe` 分发期间不安全**：直接重建列表绕过 `_is_dispatching` 保护。改为 `_remove_handler()` 安全路径。
+- **BUG-004 — 检测器路径缺失 AI prompt**：正则回退路径生成 `ai_prompt`，检测器路径跳过。`_convert_context_to_results` 统一生成。
+
+### Changed — 工程卫生
+
+- **根目录整理**：`ROADMAP_v1.2.md`、`REQUIREMENTS.md`、`BUILD_SECURE.md`、`KNOWN_ISSUES.md` → `docs/`；`build_secure.py`、`pack.bat` → `scripts/build/`；`app_icon.ico` → `assets/`。更新 6 处交叉引用。
+- **死目录清理**：删除 `src/data/`（冗余副本）、`src/mca_core/ui/`（空目录，零引用）。
+- **依赖修复**：`requirements.txt` `PySide6` → `PyQt6`（全仓实际使用 PyQt6）。
+- **.gitignore 补充**：`tools/sign_patch.py`（自动生成）、`PENETRATION_TEST_REPORT*.md`、`docs/security/`。
+- **渗透报告归位**：3 份散落根目录的报告移入 `docs/security/`。
+
+### Added
+
+- `test_dlc_security_validation.py` — DLC AST 安全验证 10 项测试。
+- `test_patch_security.py` — 更新 `test_admin_os_allowed` → `test_admin_os_import_blocked` + `test_admin_safe_math_allowed`。
+
+### Test Coverage
+
+- 安全测试：**32 passed**（patch 16 + input_sanitizer 5 + core_security 1 + dlc_security 10）
+- 全量语法验证：11/11 修改文件编译通过
+
+---
+
+## v2.1.0 — 架构重构、性能优化与安全修复 (2026-06-10)
 
 ### 版本概览
-这是一个系统性大版本，覆盖三条主线：(1) 彻底移除 TKinter 旧架构，项目从双轨制统一为纯 PyQt6；(2) 补丁系统从默认 admin 无限制执行改为三级权限沙箱 + AST 代码验证；(3) 检测器引擎大幅优化，新增 5 种检测器、诊断引擎 v3.0、UI 扁平化重设计、BrainCore 延迟初始化。
+本版本聚焦架构重构与性能优化：(1) BrainCore 巨型类拆分为 DLCManager 子模块；(2) EventBus/Registry 惰性优化；(3) DiagnosticEngine 策略模式解耦；(4) 多项安全漏洞修复；(5) 原生算力优化（NUMA 感知、融合算子）。
+
+---
+
+### Changed — 架构重构
+
+- **BrainCore 拆分**：提取 `DLCManager` 子模块（303 行），巨型类从 1302 行瘦身，DLC 方法改为委托桩。
+- **EventBus 惰性排序**：subscribe 不再立即 O(n log n) 排序，改为 publish 时惰性排序，减少冷启动开销。
+- **DetectorRegistry 懒加载**：首次调用 list/run_all 时触发 load_builtins()，避免导入级联。
+- **DiagnosticEngine 策略模式**：新增 `DetectorExecutionStrategy` Protocol，执行逻辑解耦为 `ThreadPoolExecutionStrategy`。
+
+### Fixed — 安全漏洞修复
+
+- **插件系统 `_validate_imports` 静默放行**：返回值改为 `list[str]`（违规模块列表），不再静默忽略。
+- **插件系统重复 hash 计算**：`_validate_plugin_code` 返回 SHA-256 hash，调用方复用避免重复文件读取。
+- **DLC DistributedComputing 竞态条件**：stop_workers 先发毒丸再设置 is_running=False，修复 worker 阻塞。
+- **DLC disable() 不释放 GPU**：改为调用 _pre_shutdown/_post_shutdown 释放资源。
+- **CodeBertDLC shutdown 绕过基类**：GPU 清理逻辑移入 _pre_shutdown，shutdown 调用 super()。
+- **Discovery sys.modules 泄漏**：load_dlc_classes_from_file 用 try/finally 清理临时模块。
+- **沙箱 `__import__` 安全漏洞**：从 RESTRICTED_BUILTINS 移除，RESTRICTED 级别禁止动态导入。
+- **沙箱 open() 分配顺序脆弱**：用 pop 明确禁止，消除重复 elif 分支。
+
+### Added — 原生算力优化
+
+- **NUMA 感知 CPU 设备**：`NumaCPUDevice` 类支持 NUMA 节点绑定与内存池预分配。
+- **融合算子**：`FusedMatMulReLU`、`FusedLinearReLU` 减少中间分配。
+- **标准化算子**：`BatchNorm1D`、`LayerNorm` 支持批量训练。
+- **内存优化**：TensorNode 与 Function 子类添加 `__slots__`。
+- **缓存优化**：`get_numpy_compat` 使用 `@lru_cache(maxsize=8)`。
+
+---
+
+## v2.0.0 — TKinter→PyQt6 架构统一、补丁安全加固、检测器引擎跃升 (2026-06-08)
+
+### 版本概览
+这是一个**破坏性大版本**，覆盖三条主线：(1) **彻底移除 TKinter 旧架构**，项目从双轨制统一为纯 PyQt6；(2) 补丁系统从默认 admin 无限制执行改为三级权限沙箱 + AST 代码验证；(3) 检测器引擎大幅优化，新增 5 种检测器、诊断引擎 v3.0、UI 扁平化重设计、BrainCore 延迟初始化。
+
+**升级注意**：TKinter 相关 API 全部移除，如有依赖请迁移至 PyQt6 版本。
 
 统计：`+4,014 / -8,901` 行净变更，删除约 8.9K 行死代码。
 
@@ -94,104 +182,29 @@
 
 ---
 
-## v1.5.3 — 系统可观测性、性能优化与安全加固 (2026-05-28)
+## v1.5.3 — 仪表盘、并行检测引擎与可观测性 (2026-05-28)
 
-### 版本概览
-这一版是系统性"打磨"版本：补上仪表盘实时监控能力、将检测器引擎推至并行化、大幅提升补丁管理系统的可靠性和监控能力、封堵信息泄露漏洞，完成深度的死代码清扫，并实施版本号集中管理与导入/依赖优化。
+### Added
+- **DashboardController**：独立于 BrainCore 的仪表盘控制器（MetricsCollector + AnomalyDetector + AlertManager + HistoryStore），解决面板依赖 BrainCore 启用才能显示的问题。
+- **DiagnosticEngine v3.0**：线程池并行执行（8 workers × 15s 超时），LRU+TTL 缓存，置信度评分，结果去重。
+- **PatchManager v2.0**：PatchCache（mtime 失效 LRU）、PatchDownloader（指数退避重试+SHA-256 校验）、PatchMonitor（守护线程监控）。
 
----
+### Fixed
+- 补丁子系统序列化错误（PatchRecord 直接存入缓存 → 改为 dict）。
+- 仪表盘检测率/误报率始终为 0（_dashboard_controller 未连接）。
+- 检测器重复执行导致结果翻倍（AutoTestWorker 同时走 engine 和 registry）。
+- 告警风暴：AnomalyDetector 添加 60s 冷却去重（消除 98.6% 重复告警）。
+- Alert ID 碰撞：改为 `uuid.uuid4().hex[:16]`。
+- LruTtlCache 缓存污染：添加活跃 ID 追踪。
 
-### Added — 仪表盘实时监控系统
+### Changed
+- 版本号统一 `brain_system/__init__.py`，`pyproject.toml` 用 dynamic attr 同步。
+- 移除 `brain_system/dlcs/` pass-through shim（5 文件 + 整个目录）。
+- 删除 `patch_manager/cli.py`、`run_patch_manager.py`（零引用）。
+- `/ready` 移除 dlcs 字段，`/metrics` 仅限 localhost 访问。
 
-- **DashboardController 独立控制器**：创建不依赖 BrainCore 的 `DashboardController`（封装 `MetricsCollector`、`AnomalyDetector`、`AlertManager`、`HistoryStore`），解决仪表盘原先因 BrainCore 未启用而导致的三层连接断裂（DashboardDLC 未实例化 → UI 面板为 None → 所有指标显示 "--"）。
-- **实时指标收集**：`MetricsCollector` 基于 `threading.RLock()` 支持检测器运行次数、成功率、平均响应时间、最后活跃时间等实时统计。
-- **异常检测与告警**：`AnomalyDetector` 监控响应时间阈值（连续 3 次超 500ms 触发告警）、成功率下降趋势；`AlertManager` 管理告警生命周期（NEW → ACKNOWLEDGED → RESOLVED）。
-- **历史数据存储**：`HistoryStore` 以 5 分钟为间隔持久化指标快照，支持趋势回顾。
-
-### Added — 检测器系统全面优化 (DiagnosticEngine v3.0)
-
-- **并行执行引擎**：`DiagnosticEngine` 从串行逐检测器运行改为 `ThreadPoolExecutor(max_workers=8)` 并行执行，15 秒超时保护，带进度回调。
-- **LRU+TTL 检测缓存**：新增 `DetectorCache`（LRU 淘汰 + 10 分钟 TTL），基于日志 SHA-256 哈希作为缓存键。相同日志的重复分析零开销。
-- **置信度评分系统** (`contracts.py` v2.0)：`DetectionResult` 新增 `confidence` 字段 (0.0~1.0)，支持检测器根据证据强度自评可信度。
-- **结果去重**：`_seen_messages: Set[str]` 基于内容哈希去重，消除多个检测器对同一问题的重复报告。
-- **预筛跳过机制**：`skip_detector` / `is_skipped` 方法支持根据日志特征提前排除不相关检测器。
-- **DuplicateModsDetector 算法优化**：关键词检查从 O(N×M) 降为 O(N)，使用预编译正则 + `OrderedDict` 缓存。
-
-### Added — 补丁管理系统全面升级 (PatchManager v2.0)
-
-- **PatchCache 扫描缓存**：基于 mtime 失效策略的 LRU 缓存（max 200 条目），避免每次扫描都遍历磁盘。
-- **PatchDownloader HTTP 下载器**：支持指数退避重试（3 次）+ SHA-256 完整性校验 + 实时进度回调。
-- **PatchMonitor 后台监控**：守护线程持续追踪补丁数、安装成功率、完整性状态，异常时自动告警。
-- **线程安全升级**：`PatchManager` 核心操作从普通字典操作改为 `threading.RLock()` 保护。
-
----
-
-### Fixed — 三项关键 Bug 修复
-
-- **Bug 1 — 补丁子系统扫描失败**：`_persist_state()` 曾将 `PatchRecord` 对象直接存入缓存导致反序列化失败。修复为存储 `{pid: rec.to_dict()}` 序列化格式。
-- **Bug 2 — 仪表盘检测率/误报率均为 0**：`DiagnosticEngine` 的 `_dashboard_controller` 从未被设置。修复为在 `main_window_pyqt.py` 中连接 `engine.set_dashboard_controller()`，并在 `_run_single_detector()` 中追踪检测前后结果数变化。
-- **Bug 3 — "unknown" 标签泛滥 + 结果数量翻倍**：`result.cause_label` 为 None 时回退为 `"unknown"` 而非检测器名称；`AutoTestWorker` 同时调用 `engine.analyze()` 和 `registry.run_all_parallel()` 导致检测器执行两遍。修复为使用 `result.detector` 作为回退名 + 移除 `registry.run_all_parallel()` 冗余调用 + 修正计数逻辑。
-
----
-
-### Changed — 核心引擎优化与缺陷修复
-
-- **DiagnosticEngine 缓存统一**：移除冗余的 `_result_cache`（OrderedDict），统一使用 `DetectorCache`（LRU+TTL）。原先两套缓存存储相同数据，浪费内存且增加维护复杂度，现简化为单一缓存路径。
-- **告警风暴修复**：`AnomalyDetector` 添加 60 秒冷却期去重机制（`COOLDOWN_SECONDS = 60.0`），同一检测器+同一异常类型在冷却期内不重复生成告警。原先监控循环每 5 秒对所有检测器生成异常，18 检测器 × 6 异常类型 = 每分钟最多 1296 条重复告警，现降至 ~18/min，消除 98.6% 重复。
-- **Alert ID 碰撞修复**：`alert_id` 从 `str(int(time.time() * 1000))` 改为 `uuid.uuid4().hex[:16]`，消除同一毫秒内创建多个 Alert 时 ID 冲突导致 `acknowledge/resolve` 操作错误目标的问题。
-- **LruTtlCache 缓存污染修复**：`_estimate_size()` 以 `id(obj)` 缓存大小估算结果，对象被 GC 回收后新对象复用同一 `id()` 会返回错误值。添加 `_SIZE_ESTIMATE_IDS` 活跃集合追踪，防止 id 复用导致的缓存污染。
-- **DetectorCache 锁优化**：`size` 属性移除不必要的 `with self._lock`，`len()` 在 CPython 中为原子操作，减少锁争用。
-
-### Changed — 版本号集中管理
-
-- **唯一真源架构**：版本号统一在 `brain_system/__init__.py` 的 `__version__` 中定义，其他文件通过导入或 setuptools dynamic attr 自动同步。
-  - `src/__init__.py` → `from brain_system import __version__`
-  - `brain_system/core.py` → `from brain_system import __version__`（`BrainCore.version` 自动同步）
-  - `pyproject.toml` → `dynamic = ["version"]` + `version = {attr = "brain_system.__version__"}`
-- **版本校验脚本**：新增 `tools/check_version.py`，支持静态扫描 + 运行时双重验证，以及 `--set X.Y.Z` 一键修改版本号。
-- **pyproject.toml 修复**：`dependencies` 字段从 `[project.urls]` 子表（TOML 继承规则导致错误归属）移至 `[project]` 正确位置。
-
-### Changed — 导入与依赖优化
-
-- **server.py 重复导入修复**：移除 `create_app()` 函数体内冗余的 `from fastapi import FastAPI`（已在模块级第 10 行导入）及无意义的 `try/except` 守卫。
-- **未使用依赖清理**：从 `pyproject.toml` 移除 4 个声明但代码中零引用的可选依赖：
-  - `accelerate`（ai 组）— 无 `import accelerate`
-  - `python-json-logger>=2.0.7`（logging 组，整组移除）— 无 `import pythonjsonlogger`
-  - `watchdog>=4.0.0`（config 组）— 无 `import watchdog`
-  - `sphinx>=7.2.0`（docs 组，整组移除）— 无 `import sphinx`
-
----
-
-### Security — 安全加固
-
-- **`/ready` 端点信息泄露修复**：移除返回值中的 `dlcs` 字段（原返回 `{"ready": True, "dlcs": N}`），不再对外暴露内部 DLC 数量。
-- **`/metrics` 端点访问控制**：仅允许 `127.0.0.1` 访问 Prometheus 指标端点，外部请求返回 `403 Forbidden`。
-- **内部方法泄露清理**：`health_check()` 和 `get_ready_status()` 中移除 `"dlc_count": len(self.dlcs)` 字段。
-
----
-
-### Removed — 历史废弃代码清理
-
-- **删除 `brain_system/dlcs/` 兼容性空壳包**（5 文件 + 整个目录）：这些文件仅为 `from dlcs.xxx import *` 的 pass-through shim。`app_initialization_mixin.py` 中 4 个 DLC 加载方法原先用 `try: from brain_system.dlcs.x` → `except: from dlcs.x` 的双层回退，现统一为直接导入 `dlcs.*`。
-- **删除 `patch_manager/cli.py`**（547 行）：CLI 命令行接口（13 个子命令），全项目零引用。
-- **删除 `run_patch_manager.py`**：CLI 入口脚本，唯一用途是调用 `cli.main()`。
-- **清理测试引用**：`test_module_imports.py` 中移除 5 行对已删除 shim 模块的 known-optional 声明。
-- **文档更新**：`patch_manager/__init__.py` 文档字符串移除 "CLI 命令行接口" 描述。
-
----
-
-### Test Coverage
-
-- 新增 `TestDashboardController` × 12 项仪表盘控制器测试
-- 新增 `TestDetectorCache` × 6 项缓存机制测试
-- 新增 `TestConfidenceAndDedup` × 5 项置信度与去重测试
-- 全量回归：**700+ tests passed, 0 failures**
-
-### Notes
-
-- 升级前建议运行 `tests/test_dashboard.py` 和 `tests/test_detectors.py` 确认新仪表盘和检测器缓存功能正常。
-- 删除 `brain_system/dlcs/` 后，任何硬编码 `from brain_system.dlcs.xxx import ...` 的第三方脚本需改为 `from dlcs.xxx import ...`。
-- `/metrics` 端点现在仅允许 localhost 访问，若 Prometheus 部署在外部机器，需通过反向代理转发。
+### Tests
+700+ tests passed, 0 failures
 
 ---
 
@@ -291,146 +304,45 @@
 ### Notes
 - 本次发布包含较大范围的工程化调整（UI、检测器、服务与测试），建议升级后先用一份已知崩溃日志做基线复核。
 
-## v1.4.0 — UI框架迁移与性能优化 (2026-03-27)
+## v1.4.0 — Tkinter→PyQt6 UI 迁移 (2026-03-27)
 
-### 影响概览
-- **影响等级**: 🟢 **高** - 重大UI框架迁移(Tkinter → PyQt6) + 核心性能优化
-- **关键变更**: 
-  - 🎨 **UI框架升级**: 从Tkinter迁移至PyQt6，引入现代化玻璃拟态设计
-  - 📱 **高分屏支持**: 新增高DPI缩放支持和智能屏幕适配系统
-  - ⚡ **性能优化**: 线程池/进程池大小优化、缓存系统改进、结果缓存机制
-  - 📦 **依赖分层**: AI依赖移至可选依赖，基础安装更轻量
-  - 🧩 **架构增强**: 新增屏幕适配器、窗口状态管理器、工作线程系统
+重大 UI 框架迁移：从 Tkinter 全面切换至 PyQt6。3000 行单文件拆分为 styles/screen_adapter/workers/main_window 模块化结构。
 
 ### Added
-- **智能屏幕适配系统**：新增 `ScreenAdapter` 和 `WindowStateManager` 类。
-  - 窗口尺寸根据屏幕自动计算（宽度 66%、高度 75%，带限制）。
-  - 支持物理尺寸精确适配（PPI 计算），自动回退到比例法。
-  - 窗口状态记忆功能，使用 QSettings 持久化。
-  - 多显示器支持，记录窗口所在屏幕。
-  - 公开方法：`reset_to_default()` 和 `get_current_screen_info()`。
-- **自动化测试分析增强**：自动化测试现在使用完整的检测器系统。
-  - 集成 `DetectorRegistry` 深度检测器（OOM、依赖缺失、Mixin冲突等）。
-  - 新增"生成后自动执行分析"选项。
-  - 统计报告增加检出率计算。
-- **现代化样式系统**：
-  - 5种配色方案: 海洋蓝、薄荷绿、暮光紫、珊瑚粉、深空灰。
-  - 玻璃拟态设计: 渐变背景、阴影效果、圆角卡片。
-  - 渐变按钮: 主按钮、成功、警告、错误等状态样式。
-- **工作线程系统**：`AnalysisWorker`, `AIInitWorker`, `AutoTestWorker`。
-  - 异步分析流程支持进度回调 (10% → 20% → 40% → 70% → 100%)。
+- PyQt6 主窗口 `SiliconeCapsuleApp`、智能屏幕适配（QSettings 持久化）、5 种配色方案。
+- `AnalysisWorker` / `AIInitWorker` / `AutoTestWorker` 工作线程系统。
+- 自动化测试集成 DetectorRegistry + 检出率统计。
 
 ### Changed
-- **UI框架迁移 (Tkinter → PyQt6)**：
-  - 新增 `main_window_pyqt.py` - 主应用窗口 `SiliconeCapsuleApp`。
-  - 新增 `screen_adapter_pyqt.py` - 屏幕适配系统。
-  - 新增 `workers_pyqt.py` - 后台工作线程。
-  - 新增 `styles_pyqt.py` - 样式系统 `ColorPalette`。
-  - 新增 `ui/dpi_awareness.py` - DPI感知支持。
-- **代码架构重构**：将 3000 行的 `app_pyqt.py` 拆分为模块化结构。
-  - `styles_pyqt.py`：配色方案和 CSS 生成（~450 行）。
-  - `screen_adapter_pyqt.py`：智能屏幕适配（~280 行）。
-  - `workers_pyqt.py`：工作线程类（~340 行）。
-  - `main_window_pyqt.py`：主窗口类（~1200 行）。
-  - `app_pyqt.py` 已删除，入口统一为 `main.py`。
-- **诊断规则扩展**：新增 6 个诊断规则覆盖更多测试场景。
-  - `out_of_memory`、`missing_dependency`、`mixin_conflict`。
-  - `version_conflict`、`gl_error`、`compound_error`。
-- **高DPI环境变量优化**：将环境变量设置移至文件最开头，确保在任何导入之前执行。
-- **线程池/进程池优化**：
-  - 线程池大小: 固定50 → `min(CPU核心数*4, 32)`。
-  - 进程池大小: `CPU核心数` → `min(CPU核心数, 8)`。
-  - 线程命名: 无 → `BrainWorker`。
-- **缓存键生成优化**：使用hash缓存替代深拷贝+JSON序列化，大幅提升性能。
-- **诊断引擎结果缓存**：新增 `OrderedDict` LRU缓存机制，最大100条。
+- 线程池：固定 50 → `min(CPU×4, 32)`；进程池：`CPU` → `min(CPU, 8)`。
+- 诊断规则新增 6 个模式（OOM、依赖缺失、Mixin、版本冲突、GL 错误、复合错误）。
+- 缓存键优化：hash 替代深拷贝+JSON 序列化。
+
+### Removed
+- `app_pyqt.py` 入口，统一为 `main.py`。
+
+## v1.3.1 — 依赖架构规范化 (2026-03-17)
+
+### Changed
+- 依赖管理升级为 Optional Dependencies 标准方案（ai/crypto/observability/server/config/ha 分组）。
+- 文档安装指引同步更新，基础安装与 AI 增强路径分离。
+
+## v1.3.0 — Brain System 算法重构与学习引擎增强 (2026-03-10)
+
+### Added
+- **断路器模式**（`retry.py`）：三态 CLOSED→OPEN→HALF_OPEN 状态机，全局重试预算。
+- **动态 TTL 缓存**：热点数据自动延长过期（最多 3x），手动 refresh_ttl()。
+- **健康检查系统**：`health_check()` / `is_healthy()` / `get_ready_status()`（Kubernetes 就绪探针）。
+- **配置验证与回滚**：`_validate_config()` → `rollback_config()`，更新失败自动回滚。
+- **学习引擎增强**：特征提取 8→11 种，加权 Jaccard 相似度（trait×3.0, exception×2.5, mod×2.0），快速索引 O(n)→O(1)。
+- **检测器优先级**：PRIORITY_CRITICAL=0～LOW=100，Registry 自动排序。
 
 ### Fixed
-- 修复 `generate_batch` 函数调用参数顺序问题。
-- 修复 `QGraphicsDropShadowEffect` 导入位置错误（应从 QtWidgets 导入）。
-- 修复多个导入路径问题（config_service、log_service 等）。
+- 缺失依赖检测器误报版本冲突；版本冲突检测器增加详情提取。
+- `except Exception: pass` → 有意义的日志。Mixin 类添加 Protocol 类型注解。
 
-### Removed
-- 移除 `app_pyqt.py` 入口文件，统一使用 `main.py`。
-
-## v1.3.1 — 最新体验与依赖架构优化 (2026-03-17)
-
-本次更新聚焦于界面体验打磨与系统依赖管理的规范化重构，全面回归开源社区通行规范。
-
-### Added
-- 新增 PyQt6 拟态主题体验路径，推进从 Tkinter 到 PyQt6 的界面演进。
-- 新增高分屏适配能力，改善不同分辨率下的显示一致性。
-- 新增 Python 微版本精确展示（例如 3.13.12），便于排错与环境核对。
-- 新增安全与质量说明整合：将渗透测试报告与安全封装实践纳入本次更新记录。
-
-### Changed
-- 依赖管理升级为 Optional Dependencies 标准方案，重负载 AI 组件拆分为 ai 可选安装组。
-- 基础安装路径继续轻量化，requirements.txt 保持核心依赖，降低无独显设备的安装成本。
-- 文档安装指引同步更新：基础安装与 AI 增强安装路径分离，部署流程更清晰。
-- 诊断与性能链路说明整合：补充检测器优化、正则缓存提速、数据库与历史回溯能力增强等内容。
-
-### Removed
-- 移除非标准、侵入式的安装拦截思路，避免对 CI/CD 与社区协作链路造成潜在干扰。
-
-## v1.3.0 — Brain System 核心算法重构与学习引擎增强 (2026-03-10)
-本次更新聚焦于 Brain System 核心算法的全面重构，引入断路器模式、动态 TTL 缓存、健康检查等生产级特性，同时大幅增强学习引擎的特征提取能力。
-
-### Brain System 核心算法重构 (Core Algorithm Refactoring)
-- **Feat (断路器模式)**：在 `retry.py` 中实现完整的断路器（Circuit Breaker）模式。
-    - 三态断路器：CLOSED → OPEN → HALF_OPEN 自动状态机。
-    - 可配置的失败阈值、恢复超时、成功阈值。
-    - 全局重试预算管理（`RetryBudget`），防止重试风暴。
-- **Feat (任务超时控制)**：`compute()` 方法支持可配置超时和优先级。
-    - 慢任务追踪和警告日志。
-    - 超时后自动取消任务。
-- **Feat (动态 TTL 缓存)**：`LruTtlCache` 支持根据访问频率动态调整 TTL。
-    - 热点数据自动延长过期时间（最多 3x）。
-    - 手动 TTL 刷新接口 `refresh_ttl()`。
-- **Feat (健康检查端点)**：新增完整的健康检查系统。
-    - `health_check()`：返回系统状态、组件状态、性能指标和问题列表。
-    - `is_healthy()`：快速健康状态检查。
-    - `get_ready_status()`：Kubernetes 就绪探针支持。
-- **Feat (配置验证和回滚)**：配置热更新增加验证和回滚机制。
-    - `_validate_config()`：验证缓存、重试、线程池等配置参数。
-    - `rollback_config()`：回滚到上一个有效配置。
-    - 更新失败自动回滚。
-
-### 学习引擎增强 (Learning Engine Enhancement)
-- **Improve (特征提取算法)**：特征提取从 8 种扩展到 11 种。
-    - 新增：错误代码 (`error_code:XXX`)、线程名称 (`thread:Render-Thread`)、关键包名 (`pkg:software.bernie`)。
-    - 扩展关键模式：NPE、安全异常、文件未找到、并发修改等 24 个模式。
-- **Improve (加权相似度计算)**：使用加权 Jaccard 相似度替代简单 Jaccard。
-    - 关键特征权重：trait=3.0, exception=2.5, mod=2.0。
-    - 关键特征匹配奖励机制。
-- **Feat (快速索引系统)**：基于 trait + exception 构建快速查找键，查找效率从 O(n) 提升到 O(1)。
-- **Feat (批量学习支持)**：`batch_learn()` 方法支持批量导入崩溃模式。
-- **Feat (模式导入导出)**：`export_patterns()` / `import_patterns()` 支持模式持久化。
-
-### 检测器系统改进 (Detector System Improvement)
-- **Feat (检测器优先级)**：`Detector` 基类新增 `get_priority()` 和 `get_confidence()` 方法。
-    - PRIORITY_CRITICAL=0, PRIORITY_HIGH=10, PRIORITY_NORMAL=50, PRIORITY_LOW=100。
-    - Registry 自动按优先级排序运行检测器。
-- **Fix (版本冲突误报)**：修复缺失依赖检测器误报版本冲突的问题。
-    - 增加冲突指示器检测，排除纯冲突场景。
-    - 版本冲突检测器增加更多冲突模式和详情提取。
-- **Improve (版本冲突检测器)**：增强冲突检测能力。
-    - 提取具体冲突详情（mod A vs mod B）。
-    - 中文输出结果。
-
-### DLC 系统改进 (DLC System Improvement)
-- **Feat (热加载回滚)**：`reload_dlc_file()` 支持失败自动回滚。
-    - 备份现有 DLC。
-    - 加载失败时自动恢复旧版本。
-    - 返回 `(count, success)` 元组。
-
-### 代码质量改进 (Code Quality Improvement)
-- **Fix (异常处理)**：将所有 `except Exception: pass` 改为有意义的日志记录。
-- **Fix (类型注解)**：为 Mixin 类添加 Protocol 和类型注解。
-    - `AnalysisMixinHost`、`FileOpsMixinHost`、`UIMixinHost` Protocol。
-    - 类级别属性类型注解。
-- **Fix (诊断错误)**：修复 `ProcessPoolExecutor` 私有属性访问问题。
-
-### 测试结果 (Test Results)
-- AI 准确性测试：**100.0%**（10/10 通过）
+### Tests
+AI 准确性测试：100.0%（10/10 通过）
 - Brain System 评分：**3.3/5 → 4.5/5**
 
 ---
@@ -455,46 +367,68 @@
 ---
 
 ## v1.1.1 — 错误吞没与监控修复 (2026-02-12)
-跟代码里藏雷的 `except: pass` 们干了一架，总算把这些沉默杀手给揪出来了。
 
-- **Fix**: 干掉了5处 `except: pass` 静默吞错。现在至少会往控制台吐点错误信息，排查问题不用瞎猜了。
-- **Fix**: 修复了 `ResourceLimiter` 之前 `_get_memory_usage()` 永远返回0的问题。现在接上了 psutil，真正实现了内存和CPU资源监控。
-- **Fix**: 修复 URL 拼接以前直接用 `replace(' ', '+')` 遇到特殊字符就炸的问题。现在改用 `urllib.parse.quote_plus`。
-- **Fix**: 修复 `LogService` 缓存比较用了 `is` 而不是 `==`，导致缓存形同虚设的问题。现在按值比较，缓存终于生效了。
-- **Refactor**: 把硬编码的 2000 字符截断，改成了常量 `MAX_LOG_LINE_LENGTH`。
-- **Improve**: 配置加载出错时增加日志提示。
+### Fixed
+
+- 修复 5 处 `except: pass` 静默吞错，改为输出错误信息到控制台。
+- 修复 `ResourceLimiter._get_memory_usage()` 返回 0 的问题，接入 psutil 实现真实的内存和 CPU 监控。
+- 修复 URL 拼接使用 `replace(' ', '+')` 导致特殊字符异常的问题，改用 `urllib.parse.quote_plus`。
+- 修复 `LogService` 缓存比较使用 `is` 而非 `==` 导致缓存失效的问题。
+
+### Changed
+
+- 硬编码的 2000 字符截断改为常量 `MAX_LOG_LINE_LENGTH`。
+- 配置加载出错时增加日志提示。
 
 ---
 
 ## v1.1.0 — 大版本发布与分发优化 (2026-02-06)
-这次是工程化问题的里程碑版本：把可执行分发、体积与工程化问题当成第一要务来处理，顺手把文档和部分注释洗了个澡，让它看起来像个真实在被人维护的项目。
 
-### 主要亮点
-- **构建与分发**：引入 `LITE`/`FULL` 两套产物策略，`LITE` 包含核心可执行与配置，用于补丁发布与快速验证；`FULL` 为独立运行版（含所有依赖）。
-- **大文件处理**：实现了二进制切分逻辑（`tools/package_release.py`），自动将过 1.9GB 的 ZIP 拆成 `.001/.002` 分卷，解决了 GitHub 单文件 2GB 限制的现实问题。
-- **依赖拆分**：将重量级 ML 依赖从核心模块脱钩（`mca_core` 仅保留轻量逻辑），默认不强制安装 `torch`，避免“拉一堆大包只为看日志”的尴尬。
-- **文档与可维护性**：全面清理了“营销式”措辞，README、CHANGELOG、脚本注释均改为实用、直白的工程师风格。
-- **基础健康检查**：增加签名校验说明（DLC `.sig`）、LRU 缓存策略与重试策略的文档注释，便于运维和安全审计。
+### 版本概览
+工程化里程碑版本，聚焦可执行分发、体积优化与文档规范化。
 
-### 破坏性变更与注意事项
-- **API 和插件**：DLC 接口未做大改动，但部分老旧 DLC 如果依赖于内置 `torch` 可能需要调整（把 `torch` 当作可选依赖并在 DLC 内部做退化处理）。
-- **体积策略**：默认分发 LITE，若你是运维并需要完整体验（可视化 + 语义分析），请使用 FULL 并准备好合并分卷与安装可选依赖。
-- **遗留问题**：UI 在处理超大文件时仍会出现短暂卡顿（2–3 秒），这是遗留代码在主线程做 I/O 的直接后果（*注：此问题已在 v1.2.0 的数据库无锁队列与主管道重构中解决*）。
+### Added — 构建与分发
+
+- 引入 `LITE`/`FULL` 两套产物策略：`LITE` 包含核心可执行与配置，用于补丁发布与快速验证；`FULL` 为独立运行版（含所有依赖）。
+- 实现二进制切分逻辑（`tools/package_release.py`），自动将超过 1.9GB 的 ZIP 拆分为 `.001/.002` 分卷，解决 GitHub 单文件 2GB 限制。
+
+### Changed — 依赖与文档
+
+- 将重量级 ML 依赖从核心模块脱钩（`mca_core` 仅保留轻量逻辑），`torch` 改为可选依赖。
+- 全面清理文档措辞，README、CHANGELOG、脚本注释改为工程师风格。
+- 增加签名校验说明（DLC `.sig`）、LRU 缓存策略与重试策略的文档注释。
+
+### Notes
+
+- DLC 接口未做大改动，依赖内置 `torch` 的老旧 DLC 需调整为可选依赖并做退化处理。
+- 默认分发 LITE，完整体验（可视化 + 语义分析）需使用 FULL 并合并分卷。
+- UI 处理超大文件时仍有 2–3 秒卡顿（已在 v1.2.0 解决）。
 
 ---
 
 ## v1.0.0 — 核心解耦与初版构建 (2026-02-06)
-总算把核心逻辑和那一大坨 PyTorch 依赖拆开了。
 
-- **Refactor**: 拆分了 `mca_core` 和外部库。
-- **Fix**: 修复了构建脚本 `pack.bat` 处理路径空格崩溃的问题（大部分情况下）。
-- **Feat**: 增加了一个 "LITE" 构建目标（完整版构建出来有 2.8GB，GitHub 根本传不上去）。
-- **Workaround**: 在 `package_release.py` 里手写了个文件切分逻辑。虽然丑了点，但能用。
+### Changed
+
+- 拆分 `mca_core` 与外部库，核心逻辑与 PyTorch 依赖分离。
+
+### Fixed
+
+- 修复构建脚本 `pack.bat` 处理路径空格崩溃的问题。
+
+### Added
+
+- 增加 "LITE" 构建目标，完整版构建产物约 2.8GB。
+- 在 `package_release.py` 实现文件切分逻辑。
 
 ---
 
 ## v0.9.0 — 内部测试版本 (Pre-1.0)
-- 所谓的 "Neural" 分析其实就是一堆随机启发式算法。
+
+早期内部测试版本，基于启发式算法实现基础诊断能力。
+
+---
 
 ## v0.4.0 — 原型阶段 (Pre-1.0)
-- 纯纯的正则地狱。
+
+原型阶段，核心诊断逻辑基于正则表达式实现。

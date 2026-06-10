@@ -185,6 +185,7 @@ class EventBus:
     def __init__(self) -> None:
         """初始化事件总线。"""
         self._subscribers: Dict[str, List[EventHandler]] = {}
+        self._needs_sort: Dict[str, bool] = {}
         self._pending_removals: List[Tuple[str, EventHandler]] = []
         self._is_dispatching: bool = False
 
@@ -214,7 +215,7 @@ class EventBus:
         """
         event_handler = EventHandler(handler=handler, priority=priority)
         self._subscribers.setdefault(event_type, []).append(event_handler)
-        self._subscribers[event_type].sort()
+        self._needs_sort[event_type] = True
         
         def unsubscribe() -> None:
             self._remove_handler(event_type, event_handler)
@@ -313,7 +314,7 @@ class EventBus:
         for event_type, handler in subscriptions:
             event_handler = EventHandler(handler=handler, priority=priority)
             self._subscribers.setdefault(event_type, []).append(event_handler)
-            self._subscribers[event_type].sort()
+            self._needs_sort[event_type] = True
 
     def _remove_handler(
         self,
@@ -347,18 +348,20 @@ class EventBus:
     ) -> None:
         """
         取消订阅事件。
-        
+
         从订阅列表中移除指定的处理函数。
-        
+        BUG-003 修复: 分发期间安全移除，避免并发修改。
+
         Args:
             event_type: 事件类型
             handler: 要移除的处理函数
         """
-        if event_type in self._subscribers:
-            self._subscribers[event_type] = [
-                h for h in self._subscribers[event_type]
-                if h.handler != handler
-            ]
+        if event_type not in self._subscribers:
+            return
+        for h in self._subscribers[event_type]:
+            if h.handler == handler:
+                self._remove_handler(event_type, h)
+                break
 
     def publish(self, event: AnalysisEvent) -> None:
         """
@@ -371,9 +374,15 @@ class EventBus:
         Args:
             event: 要发布的事件对象
         """
-        handlers = list(self._subscribers.get(event.type, []))
+        handlers = self._subscribers.get(event.type, [])
         if not handlers:
             return
+        
+        if self._needs_sort.get(event.type, False):
+            handlers = list(self._subscribers[event.type])
+            handlers.sort()
+            self._subscribers[event.type] = handlers
+            self._needs_sort[event.type] = False
         
         self._is_dispatching = True
         handlers_to_remove: List[EventHandler] = []
@@ -403,6 +412,20 @@ class EventBus:
             
             self._process_pending_removals()
 
+    # BUG-002 修复: publish_async 复用单一后台线程，不再每次创建/销毁线程池
+    _async_executor: Optional[ThreadPoolExecutor] = None
+    _async_lock = threading.Lock()
+
+    def _get_async_executor(self) -> ThreadPoolExecutor:
+        """获取或创建共享的异步事件线程池。"""
+        if self._async_executor is None:
+            with self._async_lock:
+                if self._async_executor is None:
+                    self._async_executor = ThreadPoolExecutor(
+                        max_workers=1, thread_name_prefix="event-async"
+                    )
+        return self._async_executor
+
     def publish_async(
         self,
         event: AnalysisEvent,
@@ -410,42 +433,32 @@ class EventBus:
     ) -> "Future[None]":
         """
         异步发布事件。
-        
+
         在线程池中异步执行事件处理，不阻塞当前线程。
-        
+
         Args:
             event: 要发布的事件对象
             executor: 可选的执行器（ThreadPoolExecutor）
-            
+
         Returns:
             Future 对象，可用于等待完成
-            
+
         Example:
             >>> future = bus.publish_async(event)
-            >>> # 或使用线程池
-            >>> from concurrent.futures import ThreadPoolExecutor
+            # 或使用外部线程池
             >>> executor = ThreadPoolExecutor(max_workers=4)
             >>> future = bus.publish_async(event, executor=executor)
         """
-        from concurrent.futures import ThreadPoolExecutor
-        
         if executor is None:
-            executor = ThreadPoolExecutor(max_workers=1)
-            return executor.submit(self._publish_async_wrapper, event, executor)
-        else:
-            return executor.submit(self.publish, event)
+            executor = self._get_async_executor()
+        return executor.submit(self.publish, event)
 
-    def _publish_async_wrapper(
-        self,
-        event: AnalysisEvent,
-        executor: Any,
-    ) -> None:
-        """异步发布的包装器，确保执行器正确关闭。"""
-        try:
-            self.publish(event)
-        finally:
-            if isinstance(executor, ThreadPoolExecutor):
-                executor.shutdown(wait=False)
+    def shutdown_async_executor(self) -> None:
+        """关闭异步事件线程池。"""
+        with self._async_lock:
+            if self._async_executor is not None:
+                self._async_executor.shutdown(wait=False)
+                self._async_executor = None
 
     async def publish_awaitable(self, event: AnalysisEvent) -> None:
         """

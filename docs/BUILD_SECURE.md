@@ -17,7 +17,7 @@ pip install -r requirements.txt
 
 ### Option 1: Secure Build (Recommended)
 ```bash
-python build_secure.py
+python scripts/build/build_secure.py
 ```
 
 This will:

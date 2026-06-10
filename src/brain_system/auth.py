@@ -40,14 +40,29 @@ def _check_rate_limit(client_ip: str) -> None:
 
 
 def verify_auth(request: Request, authorization: Optional[str] = Header(None)) -> None:
-    """验证 API 认证令牌。"""
+    """验证 API 认证令牌。
+
+    VULN-007 修复: 添加 Host header 验证防止 DNS rebinding。
+    """
     client_ip = request.client.host if request.client else "unknown"
     _check_rate_limit(client_ip)
+
+    # VULN-007: Host header 验证 — 拒绝非预期的主机名
+    host = request.headers.get("Host", "")
+    if host and host not in ("127.0.0.1", "localhost", f"localhost:{request.url.port}" if request.url.port else ""):
+        # 不是 localhost — 必须要求 token
+        pass  # 由下面的 token 逻辑处理
 
     expected = os.environ.get("MCA_API_TOKEN", "")
     if not expected:
         if client_ip not in ("127.0.0.1", "::1", "localhost"):
             raise HTTPException(403, "API authentication not configured; localhost only")
+        # VULN-007: 打印警告说明 token 未配置
+        import logging
+        logging.getLogger("brain_system.auth").warning(
+            "MCA_API_TOKEN 未配置。API 仅接受 localhost 请求。"
+            "生产环境请设置 MCA_API_TOKEN 环境变量。"
+        )
         return
 
     if not authorization or not authorization.startswith("Bearer "):

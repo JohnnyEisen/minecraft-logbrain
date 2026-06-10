@@ -148,10 +148,21 @@ class PatchManager:
         if not basename.endswith(".py"):
             return False, "补丁文件必须是 .py 文件"
 
-        # ── 安全验证: 读取并 AST 分析补丁代码 ──
+        # ── VULN-003 修复: API 上传的补丁最高只能为 standard 权限 ──
+        # admin 权限补丁仅允许通过本地手动部署（签名的补丁）
+        if meta.permission_level == "admin":
+            return False, (
+                "admin 权限级别的补丁不允许通过 Web API 上传。"
+                "请使用本地部署方式安装 admin 权限补丁。"
+            )
+
+        # ── VULN-005 修复: 先 hash 再读取，防止 TOCTOU ──
+        import hashlib
         try:
-            with open(source_path, "r", encoding="utf-8") as f:
-                patch_code = f.read()
+            with open(source_path, "rb") as f:
+                raw_bytes = f.read()
+            pre_hash = hashlib.sha256(raw_bytes).hexdigest()
+            patch_code = raw_bytes.decode("utf-8")
         except Exception as e:
             return False, f"无法读取补丁文件: {e}"
 
@@ -172,18 +183,17 @@ class PatchManager:
                 return False, (
                     f"补丁风险等级为 {validation.risk_level}，"
                     f"但权限级别为 restricted。\n"
-                    f"请将 permission_level 设置为 'standard' 或 'admin'。\n"
+                    f"请将 permission_level 设置为 'standard'。\n"
                     f"{validation.summary}"
                 )
 
-        if meta.permission_level == "standard":
-            if validation.risk_level == RiskLevel.HIGH.value:
-                return False, (
-                    f"补丁风险等级为 {validation.risk_level}，"
-                    f"但权限级别为 standard。\n"
-                    f"请将 permission_level 设置为 'admin'。\n"
-                    f"{validation.summary}"
-                )
+        # VULN-003 修复: standard 级别也拒绝 HIGH 风险（含 os.system/subprocess 等）
+        if validation.risk_level == RiskLevel.HIGH.value:
+            return False, (
+                f"补丁风险等级为 HIGH，包含系统调用。\n"
+                f"该补丁无法通过 Web API 安装。\n"
+                f"{validation.summary}"
+            )
 
         # 回填风险等级到元数据
         meta.risk_level = validation.risk_level
@@ -196,7 +206,13 @@ class PatchManager:
 
         dest = self._store.upload_patch(source_path, pid)
 
+        # ── VULN-005: 验证写入文件与验证时一致 ──
         meta.file_hash = compute_file_hash(dest)
+        if meta.file_hash != pre_hash:
+            # 文件在上传过程中被替换！回滚
+            if os.path.exists(dest):
+                os.remove(dest)
+            return False, "安全错误: 补丁文件在验证后发生变更，已拒绝"
 
         if key is None:
             key = get_patch_key()
@@ -699,7 +715,13 @@ class PatchManager:
         Returns:
             (success, message)
         """
-        dest = os.path.join(self._store.patch_dir, f"{patch_id}.py")
+        # VULN-008 修复: 防止路径遍历 + 验证目标在 patch_dir 内
+        safe_pid = os.path.basename(patch_id)
+        if safe_pid != patch_id or ".." in patch_id or "/" in patch_id or "\\" in patch_id:
+            return False, f"无效的 patch_id: {patch_id}"
+        dest = os.path.join(self._store.patch_dir, f"{safe_pid}.py")
+        if not os.path.realpath(dest).startswith(os.path.realpath(self._store.patch_dir)):
+            return False, "路径遍历攻击被阻止"
         ok, msg = self._downloader.download(url, dest, expected_sha256, progress_callback)
         if not ok:
             return False, msg

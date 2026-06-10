@@ -269,7 +269,7 @@ python tests/boundary_test.py
 
 - [README.md](../README.md) - 项目说明
 - [CHANGELOG.md](../CHANGELOG.md) - 变更日志
-- [REQUIREMENTS.md](../REQUIREMENTS.md) - 需求说明
+- [REQUIREMENTS.md](REQUIREMENTS.md) - 需求说明
 
 ---
 

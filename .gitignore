@@ -5,6 +5,7 @@ __pycache__/
 *.so
 .Python
 build/
+!scripts/build/
 dist/
 *.egg-info/
 .eggs/
@@ -143,9 +144,15 @@ test_results.txt
 verify_patch_e2e.py
 tools/_debug*.py
 tools/_test*.py
+tools/sign_patch.py
 .approved_patches
 patches/
 diagnostic_rules.json
 
 # ==================== 安全测试报告 ====================
 PENTEST_REPORT*.md
+PENETRATION_TEST_REPORT*.md
+docs/security/PENTEST_REPORT*.md
+docs/security/PENETRATION_TEST_REPORT*.md
+
+# ==================== 内部文档 ====================

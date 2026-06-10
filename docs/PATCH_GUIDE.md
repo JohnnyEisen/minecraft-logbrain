@@ -1,6 +1,6 @@
 # MCA Brain System 补丁与更新指南
 
-本文档适用于 MCA Brain System v1.5.0 及后续版本。
+本文档适用于 MCA Brain System v2.0.0 及后续版本。
 当前发布版本请以 `CHANGELOG.md` 顶部条目和 `pyproject.toml` 为准。
 
 ## 1. 资源文件热修 (Resource Hotfix)
@@ -30,7 +30,7 @@ from brain_system.models import DLCManifest
 class HotfixDLC(BrainDLC):
     def get_manifest(self) -> DLCManifest:
         return DLCManifest(
-            name="Hotfix v1.5.0-r1",
+            name="Hotfix v2.0.0-r1",
             version="1.0.0",
             priority=999,  # 高优先级
             description="Fix specific detector bug"
@@ -56,7 +56,7 @@ class HotfixDLC(BrainDLC):
 
 ### 3.1 源码热替换 (Source Overlay) - **推荐**
 
-在 v1.5.0+ 版本中，我们启用了 **Hotfix Patch System**。
+在 v2.0.0+ 版本中，我们启用了 **Hotfix Patch System**。
 如果只需修改 `mca_core` 或 `brain_system` 下的某个核心 `.py` 文件，**不需要重新打包**。
 
 **原理**:
@@ -69,7 +69,7 @@ class HotfixDLC(BrainDLC):
 **示例: 修复 `mca_core/app.py` 中的一个界面 Bug**
 目录结构如下:
 ```
-MCA_Brain_System_v1.5.0/
+MCA_Brain_System_v2.0.0/
   ├── MCA_Brain_System.exe
   ├── patches/                 <-- 新建此文件夹
   │   └── mca_core/            <-- 对应源码包名
@@ -81,13 +81,13 @@ MCA_Brain_System_v1.5.0/
 
 ### 3.2 重新打包 (Full Repackage) - **兜底方案**
 
-当涉及以下改动时，必须使用 `pack.bat` 重新打包：
+当涉及以下改动时，必须使用 `scripts/build/pack.bat` 重新打包：
 *   新增了 Python 第三方依赖库 (pip install)。
 *   修改了 `main.py` 或 `mca_core` 的核心启动逻辑，无法通过 DLC 修复。
 *   UI 框架的重大变更。
 
 **发布方式**: 
-1. 运行 `pack.bat`。
+1. 运行 `scripts/build/pack.bat`。
 2. 将 `dist/MCA_Brain_System_vX.Y.Z` 文件夹压缩为 `MCA_Brain_System_vX.Y.Z.zip` 发布。
 
 ## 4. 自动更新 (Future Plan)
