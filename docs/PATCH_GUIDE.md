@@ -63,14 +63,14 @@ class HotfixDLC(BrainDLC):
 程序启动时会优先检查 EXE 同级目录下的 `patches/` 文件夹。如果有同名模块，会优先加载 `patches/` 中的版本，而不是打包在 EXE 内部的版本。
 
 **操作步骤**:
-1.  在用户安装目录（即 `MCA_Brain_System.exe` 所在目录）创建 `patches` 文件夹。
+1.  在用户安装目录（即 `minecraft-logbrain.exe` 所在目录）创建 `patches` 文件夹。
 2.  按照源码结构放置修改后的文件。
 
 **示例: 修复 `mca_core/app.py` 中的一个界面 Bug**
 目录结构如下:
 ```
-MCA_Brain_System_v2.0.0/
-  ├── MCA_Brain_System.exe
+minecraft-logbrain_v2.0.0/
+  ├── minecraft-logbrain.exe
   ├── patches/                 <-- 新建此文件夹
   │   └── mca_core/            <-- 对应源码包名
   │       └── app.py           <-- 修改后的完整 python 文件
@@ -88,7 +88,7 @@ MCA_Brain_System_v2.0.0/
 
 **发布方式**: 
 1. 运行 `scripts/build/pack.bat`。
-2. 将 `dist/MCA_Brain_System_vX.Y.Z` 文件夹压缩为 `MCA_Brain_System_vX.Y.Z.zip` 发布。
+2. 将 `dist/minecraft-logbrain_vX.Y.Z` 文件夹压缩为 `minecraft-logbrain_vX.Y.Z.zip` 发布。
 
 ## 4. 自动更新 (Future Plan)
 

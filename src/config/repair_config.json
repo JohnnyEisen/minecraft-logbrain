@@ -1,6 +1,6 @@
 {
     "repo_owner": "",
-    "repo_name": "MCA_Brain_System",
+    "repo_name": "minecraft-logbrain",
     "branch": "main",
     "token_env": "GITHUB_TOKEN",
     "auto_repair": false,

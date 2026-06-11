@@ -89,7 +89,7 @@ python main.py            # 启动 PyQt6 客户端
 scripts/build/pack.bat    # PyInstaller 打包
 ```
 
-输出：`dist/MCA_Brain_System_vX.Y.Z/`
+输出：`dist/minecraft-logbrain/`
 
 ---
 

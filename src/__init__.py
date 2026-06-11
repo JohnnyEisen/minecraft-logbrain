@@ -1,6 +1,6 @@
-# MCA Brain System Source Package
+# Minecraft LogBrain Source Package
 """
-Minecraft Crash Analyzer with Brain AI System
+Minecraft LogBrain — AI-powered crash log diagnosis platform
 """
 
 from brain_system import __version__

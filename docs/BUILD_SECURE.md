@@ -27,7 +27,7 @@ This will:
 
 ### Option 2: Normal Build
 ```bash
-pyinstaller MCA_Brain_System_v1.0.spec --noconfirm
+pyinstaller minecraft-logbrain.spec --noconfirm
 ```
 
 ## Security Features
@@ -42,8 +42,8 @@ pyinstaller MCA_Brain_System_v1.0.spec --noconfirm
 
 ## Output
 
-- Location: `dist/MCA_Brain_System_v1.0/`
-- EXE: `MCA_Brain_System_v1.0.exe`
+- Location: `dist/minecraft-logbrain_v1.0/`
+- EXE: `minecraft-logbrain_v1.0.exe`
 
 ## Notes
 

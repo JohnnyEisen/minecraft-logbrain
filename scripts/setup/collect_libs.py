@@ -42,7 +42,7 @@ def main():
     
     # 输出目录：dist/lib
     base_dir = Path(__file__).resolve().parent.parent
-    dist_lib = base_dir / "dist" / f"MCA_Brain_System_v{__version__}" / "lib"
+    dist_lib = base_dir / "dist" / f"minecraft-logbrain_v{__version__}" / "lib"
     
     if dist_lib.exists():
         print(f"[Info] Removing old directory: {dist_lib}")

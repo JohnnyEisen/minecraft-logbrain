@@ -108,7 +108,7 @@ def build_exe(obfuscated=True):
     # Run PyInstaller
     cmd = [
         sys.executable, '-m', 'PyInstaller',
-        'MCA_Brain_System_v1.0.spec',
+        'minecraft-logbrain.spec',
         '--noconfirm',
         '--distpath', 'dist'
     ]
@@ -145,7 +145,7 @@ def main():
     # This is a simplified version
     
     print("\n[DONE] Build complete!")
-    print("Output: dist/MCA_Brain_System_v1.0/")
+    print("Output: dist/minecraft-logbrain_v1.0/")
 
 
 if __name__ == '__main__':

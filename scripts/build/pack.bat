@@ -50,7 +50,7 @@ echo [INFO] Building core EXE (PyInstaller)...
 echo [INFO] Note: AI/ML libraries (torch, transformers, etc.) are EXCLUDED.
 echo [INFO] They are available as optional Brain DLC.
 echo.
-%PYTHON_CMD% -m PyInstaller MCA_Brain_System_v1.0.spec --clean --noconfirm
+%PYTHON_CMD% -m PyInstaller minecraft-logbrain.spec --clean --noconfirm
 if %errorlevel% neq 0 (
     echo [ERROR] Build failed!
     pause & exit /b 1
@@ -59,7 +59,7 @@ if %errorlevel% neq 0 (
 :: 6. Collect optional libs for DLC package
 if exist lib (
     echo [INFO] Copying lib to dist for DLC package...
-    xcopy /E /I /Y lib dist\MCA_Brain_System_v1.2\lib >nul
+    xcopy /E /I /Y lib dist\minecraft-logbrain\lib >nul
     rmdir /s /q lib
 )
 
@@ -69,7 +69,7 @@ if exist build_assets rmdir /s /q build_assets
 echo.
 echo ============================================
 echo BUILD SUCCESS!
-echo Output: dist\MCA_Brain_System_v1.2\
+echo Output: dist\minecraft-logbrain\
 echo Expected size: ~200-400 MB (core EXE)
 echo.
 echo To use AI Brain features, install DLC:

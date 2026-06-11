@@ -1,7 +1,7 @@
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **MCA-Brain-System** (6685 symbols, 12595 relationships, 261 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **minecraft-logbrain** (6685 symbols, 12595 relationships, 261 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > Index stale? Run `node .gitnexus/run.cjs analyze` from the project root — it auto-selects an available runner. No `.gitnexus/run.cjs` yet? `npx gitnexus analyze` (npm 11 crash → `npm i -g gitnexus`; #1939).
 
@@ -24,10 +24,10 @@ This project is indexed by GitNexus as **MCA-Brain-System** (6685 symbols, 12595
 
 | Resource | Use for |
 |----------|---------|
-| `gitnexus://repo/MCA-Brain-System/context` | Codebase overview, check index freshness |
-| `gitnexus://repo/MCA-Brain-System/clusters` | All functional areas |
-| `gitnexus://repo/MCA-Brain-System/processes` | All execution flows |
-| `gitnexus://repo/MCA-Brain-System/process/{name}` | Step-by-step execution trace |
+| `gitnexus://repo/minecraft-logbrain/context` | Codebase overview, check index freshness |
+| `gitnexus://repo/minecraft-logbrain/clusters` | All functional areas |
+| `gitnexus://repo/minecraft-logbrain/processes` | All execution flows |
+| `gitnexus://repo/minecraft-logbrain/process/{name}` | Step-by-step execution trace |
 
 ## CLI
 

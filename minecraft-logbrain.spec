@@ -96,7 +96,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='MCA_Brain_System_v1.2',
+    name='minecraft-logbrain',
     debug=False,
     bootloader_ignore_signals=False,
     strip=True,
@@ -118,5 +118,5 @@ coll = COLLECT(
     strip=True,
     upx=True,
     upx_exclude=['vcruntime140.dll', 'python3*.dll', 'Qt6*.dll'],
-    name='MCA_Brain_System_v1.2',
+    name='minecraft-logbrain',
 )
