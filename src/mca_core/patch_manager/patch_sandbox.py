@@ -336,9 +336,30 @@ def execute_patch_sandboxed(
     try:
         sandbox_globals = create_sandbox_globals(level)
 
-        # 编译并执行补丁代码
+        # 编译并执行补丁代码（带 30 秒超时）
         compiled = compile(code, f"<patch:{patch_id}>", "exec")
-        exec(compiled, sandbox_globals)
+        import threading as _threading
+        _exec_error: list[Exception] = []
+        _exec_done = _threading.Event()
+        def _exec_in_thread():
+            try:
+                exec(compiled, sandbox_globals)
+            except Exception as _e:
+                _exec_error.append(_e)
+            finally:
+                _exec_done.set()
+        _t = _threading.Thread(target=_exec_in_thread, daemon=True)
+        _t.start()
+        if not _exec_done.wait(timeout=30.0):
+            return SandboxResult(
+                success=False,
+                error="补丁执行超时 (30s)",
+                message=f"补丁 {patch_id} 执行超过 30 秒，已强制终止",
+                permission_level=level.value,
+                execution_time_ms=(time.perf_counter() - start) * 1000,
+            )
+        if _exec_error:
+            raise _exec_error[0]
 
         # 调用入口函数
         entry_func = sandbox_globals.get(entry_point)
