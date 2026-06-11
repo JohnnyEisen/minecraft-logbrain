@@ -87,6 +87,21 @@ def _make_restricted_builtins(level: PermissionLevel) -> dict[str, Any]:
         if name in builtins.__dict__:
             safe[name] = builtins.__dict__[name]
 
+    # 运行时 getattr 包装器 — 阻止对 __subclasses__/__bases__ 等危险属性的访问
+    # 这是对抗 chr()/字符串拼接/动态构造绕过文本匹配的最终防线
+    _blocked_dunders = frozenset({
+        "__subclasses__", "__bases__", "__mro__", "__globals__",
+        "__code__", "__closure__", "__builtins__", "__loader__",
+    })
+    _original_getattr = safe.get("getattr", builtins.getattr)
+    def _safe_getattr(obj, name, *args):
+        if isinstance(name, str) and name in _blocked_dunders:
+            raise AttributeError(
+                f"沙箱安全限制: 禁止访问 '{name}' 属性"
+            )
+        return _original_getattr(obj, name, *args)
+    safe["getattr"] = _safe_getattr
+
     # RESTRICTED 级别下不允许任何 I/O
     if level == PermissionLevel.RESTRICTED:
         safe.pop("open", None)
@@ -301,8 +316,7 @@ def execute_patch_sandboxed(
         entry_kwargs = {}
 
     # ── 源码级内省拦截（防 __subclasses__/__globals__ 沙箱逃逸）──
-    # 仅拦截经典沙箱逃逸链所必需的链接: ()->__class__->__bases__[0]->__subclasses__()
-    # 不拦截 __dict__/getattr/hasattr (合法代码常用)
+    # 源码文本匹配作为第一道防线
     _SANDBOX_INTROSPECTION_PATTERNS = [
         "__subclasses__", "__bases__", "__mro__", "__globals__",
         "__code__", "__closure__",
