@@ -1,95 +1,66 @@
-# MCA Brain System 补丁与更新指南
+# 补丁与更新指南
 
-本文档适用于 MCA Brain System v2.0.0 及后续版本。
-当前发布版本请以 `CHANGELOG.md` 顶部条目和 `pyproject.toml` 为准。
+适用于 v2.0.0+。当前版本以 `CHANGELOG.md` 顶部为准。
 
-## 1. 资源文件热修 (Resource Hotfix)
+---
 
-以下目录中的文件是作为"外部资源"存在的，用户可以直接修改或替换它们，重启软件即生效：
+## 1. 资源文件热修
 
-*   **`analysis_data/`**: 改动 `diagnostic_rules.json`、`mod_database.json` 等规则库不需要重新打包。
-*   **`tools/`**: 对抗生成脚本 (`generate_mc_log.py`) 等工具脚本可以直接替换。
-*   **`config/`**: 配置文件可以直接修改。
+以下目录的文件可直接修改或替换，重启即生效：
 
-**发布方式**: 直接发送修改后的文件给用户，指示覆盖安装目录对应位置。
+- `analysis_data/` — 规则库 (`diagnostic_rules.json` 等)
+- `tools/` — 工具脚本
+- `config/` — 配置文件
 
-## 2. DLC 扩展补丁 (DLC Patches)
+**发布**: 发送修改后的文件，用户覆盖安装目录对应位置。
 
-Brain System 支持动态加载 `dlcs/` 目录下的 Python 脚本。利用这一特性，我们可以发布"修复补丁"而无需让用户重新下载整个软件。
+---
 
-**原理**:
-一个新的 DLC 的优先级 (`priority`) 设置得比核心高，或者在 `initialize()` 阶段修改系统行为。
+## 2. DLC 扩展补丁
 
-**示例: 修复某个检测逻辑的 DLC**
-创建一个文件 `dlcs/patch_render_hotfix_20260425.py`:
+Brain System 支持动态加载 `dlcs/` 目录下的 Python DLC。高 `priority` 的 DLC 可在 `initialize()` 阶段修改系统行为：
 
 ```python
-from brain_system.dlc import BrainDLC
-from brain_system.models import DLCManifest
-
 class HotfixDLC(BrainDLC):
-    def get_manifest(self) -> DLCManifest:
-        return DLCManifest(
-            name="Hotfix v2.0.0-r1",
-            version="1.0.0",
-            priority=999,  # 高优先级
-            description="Fix specific detector bug"
-        )
-    
+    def get_manifest(self): return DLCManifest(name="Hotfix", priority=999)
     async def initialize(self):
-        # 在这里可以进行 Monkey Patch (运行时代码替换)
-        print("[Hotfix] Applying logic patch...")
-        
-        # 示例：替换某个模块的函数
-        # import mca_core.detectors.some_buggy_module
-        # mca_core.detectors.some_buggy_module.buggy_function = self.fixed_function
-        pass
-
-    def fixed_function(self, args):
-        # 修复后的逻辑
-        return "Fixed result"
+        # Monkey Patch 运行时代码替换
+        ...
 ```
 
-**发布方式**: 发送 `.py` 文件给用户，放入 `dlcs/` 目录。
+**发布**: 发送 `.py` 文件，用户放入 `dlcs/` 目录。
 
-## 3. 核心版本更新 (Core Update)
+---
 
-### 3.1 源码热替换 (Source Overlay) - **推荐**
+## 3. 核心版本更新
 
-在 v2.0.0+ 版本中，我们启用了 **Hotfix Patch System**。
-如果只需修改 `mca_core` 或 `brain_system` 下的某个核心 `.py` 文件，**不需要重新打包**。
+### 3.1 源码热替换（推荐）
 
-**原理**:
-程序启动时会优先检查 EXE 同级目录下的 `patches/` 文件夹。如果有同名模块，会优先加载 `patches/` 中的版本，而不是打包在 EXE 内部的版本。
+程序启动时优先检查 EXE 同级 `patches/` 目录，匹配同路径模块则优先加载：
 
-**操作步骤**:
-1.  在用户安装目录（即 `minecraft-logbrain.exe` 所在目录）创建 `patches` 文件夹。
-2.  按照源码结构放置修改后的文件。
-
-**示例: 修复 `mca_core/app.py` 中的一个界面 Bug**
-目录结构如下:
 ```
-minecraft-logbrain_v2.0.0/
+minecraft-logbrain/
   ├── minecraft-logbrain.exe
-  ├── patches/                 <-- 新建此文件夹
-  │   └── mca_core/            <-- 对应源码包名
-  │       └── app.py           <-- 修改后的完整 python 文件
-  ├── analysis_data/
-  └── ...
+  └── patches/
+      └── mca_core/
+          └── app.py          # 覆盖 EXE 内对应模块
 ```
-**发布方式**: 直接发送修改后的 `.py` 文件，并告知用户放入 `patches` 对应子目录。
 
-### 3.2 重新打包 (Full Repackage) - **兜底方案**
+### 3.2 全量重新打包
 
-当涉及以下改动时，必须使用 `scripts/build/pack.bat` 重新打包：
-*   新增了 Python 第三方依赖库 (pip install)。
-*   修改了 `main.py` 或 `mca_core` 的核心启动逻辑，无法通过 DLC 修复。
-*   UI 框架的重大变更。
+仅以下情况需要重新打包：
 
-**发布方式**: 
-1. 运行 `scripts/build/pack.bat`。
-2. 将 `dist/minecraft-logbrain_vX.Y.Z` 文件夹压缩为 `minecraft-logbrain_vX.Y.Z.zip` 发布。
+- 新增 pip 依赖
+- 修改 `main.py` 或核心启动逻辑
+- UI 框架重大变更
 
-## 4. 自动更新 (Future Plan)
+```bash
+scripts/build/pack.bat
+# 输出: dist/minecraft-logbrain/
+```
 
-未来版本可以考虑在 `main.py` 启动时检查服务器上的 `version.json`，如果发现新版本，自动下载并替换 `analysis_data` 或提示用户下载新版 DLC。
+---
+
+## 4. 自动更新（未来计划）
+
+启动时检查服务器 `version.json`，发现新版本自动下载替换。
