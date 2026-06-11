@@ -225,6 +225,24 @@ def execute_patch_sandboxed(
     if entry_kwargs is None:
         entry_kwargs = {}
 
+    # ── 源码级内省拦截（防 __subclasses__/__globals__ 沙箱逃逸）──
+    _SANDBOX_INTROSPECTION_PATTERNS = [
+        "__subclasses__", "__bases__", "__mro__", "__globals__",
+        "__code__", "__closure__", "__dict__", "__class__",
+        "__builtins__", "__import__", "getattr(", "hasattr(",
+    ]
+    code_lower = code.lower()
+    for pat in _SANDBOX_INTROSPECTION_PATTERNS:
+        if pat in code_lower:
+            return SandboxResult(
+                success=False,
+                error=f"沙箱禁止内省操作: {pat}",
+                message=f"补丁 {patch_id} 包含禁止的内省调用: {pat}",
+                permission_level=level.value,
+                restricted_operations=[pat],
+                execution_time_ms=(time.perf_counter() - start) * 1000,
+            )
+
     try:
         sandbox_globals = create_sandbox_globals(level)
 

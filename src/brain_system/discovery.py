@@ -90,12 +90,36 @@ def _validate_dlc_source(code: str, file_path: Path) -> tuple[bool, str]:
 
 
 def iter_dlc_files(search_paths: Sequence[str]) -> List[Path]:
+    """扫描 DLC 搜索路径，返回 .py 文件列表。
+
+    安全: 排除隐藏文件（.开头）、拒绝符号链接、验证在搜索路径内。
+    """
     files: List[Path] = []
     for search_path in search_paths:
-        path = Path(search_path).expanduser().resolve()
-        if not path.exists() or not path.is_dir():
+        root = Path(search_path).expanduser().resolve()
+        if not root.exists() or not root.is_dir():
             continue
-        files.extend(sorted(p for p in path.glob("*.py") if p.is_file()))
+        for p in sorted(root.glob("*.py")):
+            if not p.is_file():
+                continue
+            # 排除隐藏文件（.xxx.py，Unix 风格）
+            if p.name.startswith("."):
+                logging.debug("跳过隐藏文件: %s", p)
+                continue
+            # 拒绝符号链接 — 防止指向沙箱外
+            if p.is_symlink():
+                logging.warning("拒绝符号链接 DLC: %s", p)
+                continue
+            # 验证 resolve 后仍在搜索路径内
+            try:
+                real = p.resolve()
+                if not real.is_relative_to(root):
+                    logging.warning("DLC 路径越界: %s -> %s", p, real)
+                    continue
+            except Exception:
+                logging.warning("DLC 路径解析失败: %s", p)
+                continue
+            files.append(p)
     return files
 
 
@@ -136,6 +160,8 @@ def load_dlc_classes_from_file(file_path: Path) -> List[Type[BrainDLC]]:
 def load_dlc_classes_from_module(module_name: str) -> List[Type[BrainDLC]]:
     """从已安装的 Python 模块中加载 DLC 子类。
 
+    安全: 导入后对模块源文件执行 AST 验证。
+
     Args:
         module_name: 模块全限定名（如 ``dlcs.brain_dlc_distributed``）。
 
@@ -144,6 +170,19 @@ def load_dlc_classes_from_module(module_name: str) -> List[Type[BrainDLC]]:
     """
     try:
         module = importlib.import_module(module_name)
+        # 对模块源文件执行 AST 安全验证
+        if hasattr(module, "__file__") and module.__file__:
+            src_path = Path(module.__file__)
+            if src_path.suffix == ".py" and src_path.exists():
+                try:
+                    source = src_path.read_text(encoding="utf-8")
+                    is_safe, err = _validate_dlc_source(source, src_path)
+                    if not is_safe:
+                        logging.warning("DLC 模块安全验证失败 %s: %s", module_name, err)
+                        return []
+                except Exception as e:
+                    logging.warning("DLC 模块源文件读取失败 %s: %s", module_name, e)
+                    return []
         return _extract_dlc_classes(module)
     except Exception:
         return []
