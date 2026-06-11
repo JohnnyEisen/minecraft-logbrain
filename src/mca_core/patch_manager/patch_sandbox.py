@@ -124,21 +124,66 @@ def _blocked(name: str):
 
 
 # VULN-003 修复: 沙箱内允许导入的安全模块白名单
+# 审核规则:
+#   - inspect   → 移除: currentframe() 泄露 frame 对象 (f_builtins/f_globals)
+#   - logging   → 移除: logging.sys 泄露 sys 模块引用
+#   - io        → 移除: io.open() 可能绕过 open() 限制
+#   - subprocess → 从不在白名单
+#   - marshal/types/codecs → 始终拒绝 (不在白名单 + Python 预加载到 sys.modules)
 _SANDBOX_SAFE_MODULES = frozenset({
     "abc", "collections", "collections.abc", "copy", "dataclasses", "enum",
-    "functools", "hashlib", "hmac", "inspect", "io", "itertools",
+    "functools", "hashlib", "hmac", "itertools",
     "math", "numbers", "operator", "statistics", "string",
     "textwrap", "typing", "typing_extensions", "uuid", "warnings", "weakref",
-    "json", "logging", "time", "datetime", "re", "pathlib",
+    "json", "time", "datetime", "re", "pathlib",
     "numpy", "matplotlib", "networkx",
 })
+
+
+# 沙箱全局命名空间禁止泄露的模块引用
+_SANDBOX_BLOCKED_REFERENCES = frozenset({
+    "sys", "os", "subprocess", "socket", "ctypes", "marshal", "types",
+    "codecs", "gc", "signal", "atexit", "pickle", "shutil",
+    "urllib", "http", "smtplib", "ftplib", "telnetlib",
+})
+
+def _sanitize_sandbox_globals(sandbox_globals: dict[str, Any]):
+    """扫描并清除沙箱全局中泄露的危险模块引用。
+
+    白名单模块 (如 logging) 的内部 import (如 import sys)
+    会将 sys 泄露为模块属性 (logging.sys)。此函数遍历所有已加载模块，
+    清除其 __dict__ 中指向危险模块的引用。
+    """
+    import sys as _sys
+    for mod_name in list(sandbox_globals.keys()):
+        if mod_name.startswith("_"):
+            continue
+        mod = sandbox_globals[mod_name]
+        if not hasattr(mod, "__dict__"):
+            continue
+        for attr_name in list(mod.__dict__.keys()):
+            try:
+                attr = getattr(mod, attr_name)
+            except Exception:
+                continue
+            # 检查属性是否是危险模块
+            if attr is _sys:
+                try:
+                    delattr(mod, attr_name)
+                except Exception:
+                    pass
+            elif hasattr(attr, "__name__") and getattr(attr, "__name__", "") in _SANDBOX_BLOCKED_REFERENCES:
+                try:
+                    delattr(mod, attr_name)
+                except Exception:
+                    pass
 
 
 def _safe_import(name, globals=None, locals=None, fromlist=(), level=0):
     """VULN-003 修复: 沙箱安全导入钩子。
 
     只允许导入白名单中的模块。禁止导入 os/subprocess/socket/ctypes 等。
-    禁止 `__import__` 逃逸沙箱。
+    禁止 `__import__` 逃逸沙箱。导入后扫描并清除危险模块泄露。
     """
     base = name.split(".")[0]
     full = name
@@ -147,7 +192,34 @@ def _safe_import(name, globals=None, locals=None, fromlist=(), level=0):
             f"沙箱安全限制: 不允许导入 '{name}'。"
             f"仅允许导入白名单中的模块。"
         )
-    return __import__(name, globals, locals, fromlist, level)
+    mod = __import__(name, globals, locals, fromlist, level)
+    # THREAT-009: 扫描导入后的模块，清除泄露的危险引用（如 logging.sys → sys）
+    if hasattr(mod, "__dict__"):
+        _sanitize_imported_module(mod)
+    return mod
+
+
+def _sanitize_imported_module(mod):
+    """清除已加载模块中泄露的危险模块引用。"""
+    import sys as _sys
+    for attr_name in list(mod.__dict__.keys()):
+        if attr_name.startswith("_"):
+            continue
+        try:
+            attr = getattr(mod, attr_name)
+        except Exception:
+            continue
+        if attr is _sys:
+            try:
+                delattr(mod, attr_name)
+            except Exception:
+                pass
+        elif hasattr(attr, "__name__"):
+            if getattr(attr, "__name__", "").split(".")[0] in _SANDBOX_BLOCKED_REFERENCES:
+                try:
+                    delattr(mod, attr_name)
+                except Exception:
+                    pass
 
 
 def create_sandbox_globals(
@@ -179,6 +251,9 @@ def create_sandbox_globals(
 
     if extra_globals:
         result.update(extra_globals)
+
+    # THREAT-009: 清除所有导入模块中泄露的危险引用
+    _sanitize_sandbox_globals(result)
 
     return result
 
@@ -226,10 +301,11 @@ def execute_patch_sandboxed(
         entry_kwargs = {}
 
     # ── 源码级内省拦截（防 __subclasses__/__globals__ 沙箱逃逸）──
+    # 仅拦截经典沙箱逃逸链所必需的链接: ()->__class__->__bases__[0]->__subclasses__()
+    # 不拦截 __dict__/getattr/hasattr (合法代码常用)
     _SANDBOX_INTROSPECTION_PATTERNS = [
         "__subclasses__", "__bases__", "__mro__", "__globals__",
-        "__code__", "__closure__", "__dict__", "__class__",
-        "__builtins__", "__import__", "getattr(", "hasattr(",
+        "__code__", "__closure__",
     ]
     code_lower = code.lower()
     for pat in _SANDBOX_INTROSPECTION_PATTERNS:
