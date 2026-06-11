@@ -1,108 +1,100 @@
 # Minecraft LogBrain — 崩溃日志智能诊断
 
-面向复杂 Mod 环境的 Minecraft 崩溃诊断平台 —— 高并发解析 + AI 语义分析 + 可扩展检测器。
+[![Python](https://img.shields.io/badge/python-3.10+-blue)](https://www.python.org/)
+[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-MCA 回答三件事：**哪个组件触发崩溃、哪个根因最可疑、下一步怎么修。**
+面向复杂 Mod 环境的 Minecraft 崩溃诊断平台。回答三件事：**哪个组件触发崩溃、哪个根因最可疑、下一步怎么修。**
 
 ---
 
 ## 核心能力
 
-- **并行诊断引擎 v3.0** — 21 种检测器并发执行，15s 超时，F1 精度 98.4%
-- **AI 语义分析** — MiniLM + 7 项优化（注意力池化、Int8 量化、CrossEncoder 重排序等）
-- **补丁系统** — AST 静态验证 + 三级权限沙箱 + HMAC 签名，14 项安全漏洞全量修复
-- **仪表盘** — 实时指标、异常检测、告警管理、历史持久化
-- **DLC 生态** — 可热加载的扩展包（硬件加速、神经网络算子、CodeBERT 语义、分布式计算）
-- **启动加速** — BrainCore 延迟初始化，冷启动缩短 2-30s
+| 模块 | 能力 |
+|------|------|
+| **诊断引擎** | 21 种检测器并行执行，15s 超时，F1 精度 98.4% |
+| **AI 语义** | MiniLM + 7 项优化（注意力池化、Int8 量化、CrossEncoder 重排序） |
+| **补丁系统** | AST 验证 + 三级沙箱 + HMAC 签名，全仓渗透测试零未修复漏洞 |
+| **仪表盘** | 实时指标、异常检测、告警管理、历史持久化 |
+| **DLC 生态** | 可热加载扩展包（硬件加速、NN 算子、CodeBERT、分布式计算） |
 
 ---
 
-## 安装
+## 安装与启动
 
 ```bash
 # 基础安装（纯规则分析，无需 GPU）
 pip install -r requirements.txt
 
-# AI 增强安装（语义分析组件）
+# AI 增强安装
 pip install -e .[ai]
+
+# 启动
+python main.py
 ```
 
-辅助脚本：
-- Windows 一键安装（含 CUDA）：`scripts/setup/install_env.bat`
-- GPU 状态检测：`python scripts/setup/check_gpu.py`
-
----
-
-## 快速开始
-
-```bash
-python -m venv venv
-venv\Scripts\activate     # Windows
-source venv/bin/activate  # Linux/Mac
-
-pip install -r requirements.txt
-python main.py            # 启动 PyQt6 客户端
-```
-
-基本流程：导入崩溃日志 → 执行分析 → 查看结论与建议 → 按需开启 AI 增强。
+辅助：`scripts/setup/install_env.bat`（Windows 一键安装）| `python scripts/setup/check_gpu.py`（GPU 检测）
 
 ---
 
 ## 项目结构
 
-| 目录 | 用途 |
-|------|------|
-| `src/mca_core/` | 核心引擎、21 种检测器、补丁管理、仪表盘、服务层 |
-| `src/brain_system/` | AI 语义分析（BrainCore/DLC 框架） |
-| `src/dlcs/` | DLC 扩展包（硬件加速、NN 算子、CodeBERT、分布式） |
-| `plugins/` | 可插拔检查器与扩展 |
-| `data/` | 规则库、崩溃样本、历史数据 |
-| `tests/` | 单元测试、集成测试、安全测试 |
-| `scripts/` | 开发辅助、基准测试、构建脚本 |
-| `docs/` | 架构文档、安全报告、更新日志 |
+```
+src/
+├── mca_core/         核心引擎、检测器、补丁管理、仪表盘
+├── brain_system/     AI 语义分析（BrainCore / DLC 框架）
+├── dlcs/             DLC 扩展包
+├── config/           配置管理
+plugins/              可插拔扩展
+tests/                 823+ 测试
+data/                  规则库、崩溃样本
+docs/                  架构文档、安全报告、更新日志
+assets/                应用图标等静态资源
+scripts/               构建、基准测试、辅助脚本
+```
 
 ---
 
-## 质量与安全
+## 安全
 
-- **测试**：823+ 项，覆盖核心链路
-- **安全**：最近一次全仓渗透测试发现并修复 14 项漏洞（含 3 个 CRITICAL）→ `docs/security/`
-- **补丁**：AST 禁止 `exec/eval/compile`，三级沙箱，HMAC 签名验证
-- **服务端**：`/ready` 已脱敏，`/metrics` 仅本地访问，CSRF 保护
-- **依赖**：Python Optional Dependencies 标准，不劫持安装流程
+最近全仓渗透测试发现并修复 **14 项漏洞**（3 CRITICAL / 5 HIGH），详见 `docs/security/`。
+
+- 补丁：AST 禁止 `exec/eval/compile`，三级权限沙箱，HMAC 签名
+- DLC：加载前 AST 验证，拦截危险系统调用
+- API：Bearer Token 认证 + CSRF 保护 + 速率限制
+- 服务端：`/ready` 已脱敏，`/metrics` 仅本地访问
 
 ---
 
 ## 近期更新（v2.1.1）
 
-- **安全纵深加固**：DLC 加载增加 AST 验证、PatchDownloader SSRF 修复（ipaddress 精确白名单）、Admin 沙箱 `__import__` 拦截、14 项漏洞全量修复
-- **算力 Bug 修复**：注意力池化参数 GPU 停留修复、鲁棒聚合死代码激活、"warn" 过匹配修正
-- **工程卫生**：根目录文件归位、死目录清理、依赖修复（PySide6→PyQt6）
+- 全仓安全审计：14 项漏洞修复（DLC 代码执行、SSRF、沙箱逃逸、ReDoS 等）
+- 核心算力修复：注意力池化 GPU 参数、鲁棒聚合死代码激活、严重度误判修正
+- 工程整理：根目录归位、死目录清理、PySide6→PyQt6
 
-完整记录：[CHANGELOG.md](CHANGELOG.md) | 已知问题：[KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md)
+[完整更新日志](CHANGELOG.md) | [已知问题](docs/KNOWN_ISSUES.md)
 
 ---
 
 ## 构建
 
 ```bash
-scripts/build/pack.bat    # PyInstaller 打包
+scripts/build/pack.bat
 ```
 
-输出：`dist/minecraft-logbrain/`
+输出 `dist/minecraft-logbrain/`
 
 ---
 
 ## FAQ
 
-**不装 AI 依赖能用吗？** 可以。基础规则分析不依赖 AI 组件。
+**AI 依赖必要吗？** 不必要。基础规则分析不依赖 AI 组件。
 
-**补丁系统安全吗？** v2.0.0 起 AST 验证 + 三级沙箱。v2.1.1 新增 DLC 验证 + Admin 沙箱加固 + SSRF 防护。
+**安全性如何？** AST 验证 + 沙箱 + 签名三重防护，全仓审计零未修复漏洞。
 
-**适合什么日志？** Minecraft 客户端/服务端崩溃日志，尤其是复杂 Mod 环境的整合包。
+**适合什么日志？** Minecraft 客户端/服务端崩溃日志，尤其是复杂 Mod 整合包。
 
 ---
 
 ## 参与贡献
 
-欢迎提交 Issue/PR。优先接收：可复现崩溃样本、检测规则优化、测试与文档改进。提交前请运行测试。
+欢迎 Issue/PR。优先：可复现崩溃样本、检测规则优化、测试与文档改进。
