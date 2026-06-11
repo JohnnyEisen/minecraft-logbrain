@@ -76,6 +76,7 @@ class PatchMeta:
     permission_level: str = "restricted"                     # 权限级别: restricted/standard/admin
     required_entry_points: list[str] = field(default_factory=lambda: ["apply"])  # 必需入口函数
     risk_level: str = ""                                     # 代码风险等级: safe/low/medium/high
+    integrity_token: str = ""                                # Layer 7 盲态完整性 token
 
     def to_dict(self) -> dict:
         return asdict(self)

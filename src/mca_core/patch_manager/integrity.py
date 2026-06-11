@@ -104,6 +104,35 @@ def verify_meta_consistency(patch_file: str, meta_file: str) -> tuple[bool, str]
     return True, ""
 
 
+_ERR_PREFIX = "文件哈希不匹配: 期望="
+
+
+def _format_err(expected: str, actual: str) -> str:
+    return f"{_ERR_PREFIX}{expected[:16]}..., 实际={actual[:16]}..."
+
+
+def _compute_auth_token(filepath: str, meta: dict, key: bytes) -> str:
+    import json as _json
+    file_hash = compute_file_hash(filepath)
+    meta_sig = {k: v for k, v in meta.items() if k != "integrity_token"}
+    meta_hash = compute_content_hash(_json.dumps(meta_sig, sort_keys=True, ensure_ascii=False).encode())
+    signature = meta.get("signature", "")
+    patch_id = meta.get("patch_id", "")
+    version = meta.get("version", "")
+    msg = f"{file_hash}|{meta_hash}|{signature}|{patch_id}|{version}"
+    return hmac.new(key, msg.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def _verify_auth_token(filepath: str, meta: dict, key: bytes) -> tuple[bool, str]:
+    expected = meta.get("integrity_token", "")
+    if not expected:
+        return True, ""
+    actual = _compute_auth_token(filepath, meta, key)
+    if not hmac.compare_digest(actual, expected):
+        return False, _format_err(expected, actual)
+    return True, ""
+
+
 def compute_snapshot_checksum(state: dict) -> str:
     """计算状态快照的校验和。"""
     canonical = json.dumps(state, sort_keys=True, ensure_ascii=False)

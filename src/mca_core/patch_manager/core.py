@@ -299,6 +299,18 @@ class PatchManager:
             if not verify_signature(patch_file, key, meta.signature):
                 return False, "签名验证失败"
 
+        # 4. 元数据认证 token 校验
+        if key:
+            from .integrity import _verify_auth_token
+            meta_dict = meta.to_dict() if hasattr(meta, "to_dict") else {
+                "patch_id": meta.patch_id, "version": meta.version,
+                "signature": meta.signature, "file_hash": meta.file_hash,
+                "integrity_token": meta.integrity_token if hasattr(meta, "integrity_token") else "",
+            }
+            ok, err = _verify_auth_token(patch_file, meta_dict, key)
+            if not ok:
+                return False, err
+
         return True, "完整性校验通过"
 
     def verify_all(self) -> dict[str, tuple[bool, str]]:
