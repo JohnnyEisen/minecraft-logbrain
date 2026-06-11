@@ -144,7 +144,7 @@ test_results.txt
 verify_patch_e2e.py
 tools/_debug*.py
 tools/_test*.py
-tools/sign_patch.py
+docs/INTEGRITY_LAYER7.txt
 .approved_patches
 patches/
 diagnostic_rules.json
