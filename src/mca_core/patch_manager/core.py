@@ -44,17 +44,23 @@ from .storage import PatchStore
 
 
 class PatchManager:
-    """补丁生命周期中央管理器（v2.0 — 线程安全 + 缓存）。
+    """补丁生命周期中央管理器（线程安全 + 缓存 + 安全验证）。
 
-    用法:
+    协调补丁的扫描、上传、安装、回滚、监控全生命周期。
+    所有写操作受 ``threading.RLock()`` 保护，读操作使用 mtime 缓存。
+
+    :param patch_dir: 补丁存储目录路径。
+    :param config: DI 注入的配置管理器（可选）。
+    :param audit: DI 注入的审计追踪器（可选）。
+
+    **用法**::
+
         pm = PatchManager("patches")
-        pm.scan()                    # 扫描可用补丁（首次读取磁盘，后续使用缓存）
-        plan = pm.plan_install()     # 生成安装计划
-        pm.apply_plan(plan)          # 按计划安装
-        report = pm.generate_report() # 生成状态报告
-
-    DI 支持:
-        pm = PatchManager("patches", config=config_mgr, audit=audit_trail)
+        pm.scan()
+        pm.apply_patch("hotfix_001")           # 单补丁安装
+        pm.apply_all()                         # 批量安装
+        report = pm.generate_report()
+        print(report.summary)
     """
 
     def __init__(

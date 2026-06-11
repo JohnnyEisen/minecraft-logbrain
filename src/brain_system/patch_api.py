@@ -32,6 +32,19 @@ router = APIRouter(
     tags=["patches"],
     dependencies=[Depends(verify_auth)],
 )
+"""补丁管理 REST API。
+
+所有端点需 Bearer Token 认证，返回 JSON 格式 ``{"ok": bool, ...}``。
+
+**端点一览**:
+
+- ``GET /api/patches/list`` — 补丁列表（支持 state/sort/search 筛选）
+- ``POST /api/patches/scan`` — 扫描补丁目录
+- ``POST /api/patches/install/{id}`` — 安装补丁
+- ``POST /api/patches/rollback/{id}`` — 回滚补丁
+- ``POST /api/patches/upload`` — 上传新补丁（AST 验证 + 沙箱级别检查）
+- ``GET /api/patches/report/full`` — 完整管理报告
+"""
 
 # PatchManager 单例
 _patch_manager: Optional[PatchManager] = None

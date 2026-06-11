@@ -14,9 +14,20 @@ from .auth import verify_auth
 
 
 def create_app(brain: Any):
-    """创建 HTTP 服务：health/ready/metrics。
+    """创建 FastAPI HTTP 服务应用。
 
-    依赖：FastAPI + (可选) prometheus_client。
+    提供 ``/health``, ``/ready``, ``/metrics`` 三个端点。
+
+    安全特性：Bearer Token 认证、速率限制（60s/30 次）、CSRF 保护。
+
+    :param brain: ``BrainCore`` 实例。
+    :returns: FastAPI 应用实例。
+
+    用法::
+
+        import uvicorn
+        app = create_app(brain)
+        uvicorn.run(app, host="127.0.0.1", port=8000)
     """
 
     app = FastAPI(title="brain-system", docs_url=None, redoc_url=None)

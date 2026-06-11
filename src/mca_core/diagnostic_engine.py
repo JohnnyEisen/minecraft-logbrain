@@ -117,20 +117,33 @@ class ThreadPoolExecutionStrategy:
 
 
 class DiagnosticEngine:
-    """诊断引擎 —— 检测器系统的协调层（DI 集成版）。
+    """诊断引擎 — 检测器系统的协调层（DI 集成版）。
 
-    优化特性:
-        - 并行执行: ThreadPoolExecutor 并发运行检测器
-        - LRU+TTL 缓存: 相同日志 10 分钟内不重复分析
-        - 正则预筛: 跳过不可能匹配的检测器
-        - 仪表盘集成: 记录每次检测的耗时和结果供实时监控
-        - 单检测器超时: 防止慢检测器阻塞整个流程
-        - 置信度评分: 按信号强度区分结果重要性
-        - 策略模式: 支持自定义检测器执行策略（串行/并行/分布式）
+    协调 21 种崩溃检测器的并行执行，提供缓存、评分与仪表盘集成。
 
-    DI 支持:
-        支持通过 DI 注入 ConfigManager / AuditTrail / EventBus，
-        实现配置集中管理、操作审计和事件通信。
+    **核心特性**:
+
+    - 并行执行: ``ThreadPoolExecutor`` 并发运行检测器（max_workers=8）
+    - LRU+TTL 缓存: 相同日志 10 分钟内命中缓存，零开销返回
+    - 正则预筛: 跳过不可能匹配的检测器，减少无效计算
+    - 仪表盘集成: 记录每次检测的耗时和结果供实时监控
+    - 超时保护: 单检测器 15s 超时，防止慢检测器阻塞流程
+    - 置信度评分: 按证据强度区分结果重要性
+    - 策略模式: 支持 ThreadPoolExecutionStrategy (默认) / 串行 / 分布式
+
+    **用法**::
+
+        engine = DiagnosticEngine(data_dir="data")
+        results = engine.analyze(crash_log_text)
+        for r in results:
+            print(r["name"], r["confidence"])
+
+    :param data_dir: 诊断规则与学习数据存储目录。
+    :param repo: 可选的 ``PatternRepository`` 实例（默认从 JSON 文件加载）。
+    :param config: DI 注入的 ConfigManager (可选).
+    :param audit: DI 注入的 AuditTrail (可选).
+    :param event_bus: DI 注入的 EventBus (可选).
+    :param execution_strategy: 检测器执行策略（默认 ``ThreadPoolExecutionStrategy``）。
     """
 
     def __init__(
@@ -143,6 +156,15 @@ class DiagnosticEngine:
         event_bus: Any = None,
         execution_strategy: DetectorExecutionStrategy | None = None,
     ) -> None:
+        """初始化诊断引擎。
+
+        :param data_dir: 规则文件目录路径。
+        :param repo: 诊断模式仓库实例。
+        :param config: 配置管理器（DI 注入）。
+        :param audit: 审计追踪器（DI 注入）。
+        :param event_bus: 事件总线（DI 注入）。
+        :param execution_strategy: 检测器执行策略实例。
+        """
         self.data_dir = data_dir
         if repo:
             self.repo = repo
@@ -472,6 +494,23 @@ class DiagnosticEngine:
         return results
 
     def analyze(self, crash_log: str, host: Any = None) -> list[dict[str, Any]]:
+        """分析崩溃日志，返回检测结果列表。
+
+        先查 LRU+TTL 缓存（SHA-256 哈希键），命中则直接返回。
+        未命中则执行并行检测器 + 正则规则回退，结果写入缓存。
+
+        :param crash_log: Minecraft 崩溃日志文本。
+        :param host: 可选的 |PyQtAnalyzerHost|_ 实例（UI 路径使用，bypass 缓存）。
+        :returns: 检测结果列表，每项包含 ``type``, ``name``, ``diagnosis``,
+                  ``solutions``, ``detector``, ``confidence`` 字段。
+        :rtype: list[dict]
+
+        **用法**::
+
+            engine = DiagnosticEngine(data_dir="data")
+            results = engine.analyze(crash_log)
+            print(results[0]["diagnosis"])
+        """
         if host is not None:
             return self._analyze_no_cache(crash_log, host)
 

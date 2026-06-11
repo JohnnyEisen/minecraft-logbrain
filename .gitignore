@@ -156,3 +156,4 @@ docs/security/PENTEST_REPORT*.md
 docs/security/PENETRATION_TEST_REPORT*.md
 
 # ==================== 内部文档 ====================
+docs/_build/

@@ -22,24 +22,30 @@ if TYPE_CHECKING:
 
 
 class Detector(ABC):
-    """
-    统一的检测器抽象基类。
-    
-    所有崩溃日志检测器必须继承此类并实现其抽象方法。
-    检测器支持优先级排序，优先级较低的检测器会先执行。
-    
-    类属性:
-        PRIORITY_CRITICAL: 关键优先级 (0)，最先执行
-        PRIORITY_HIGH: 高优先级 (10)
-        PRIORITY_NORMAL: 普通优先级 (50)，默认值
-        PRIORITY_LOW: 低优先级 (100)，最后执行
-    
-    方法:
-        - detect: 执行检测逻辑（抽象方法）
-        - get_name: 获取检测器名称（抽象方法）
-        - get_cause_label: 获取关联的原因标签（抽象方法）
-        - get_priority: 获取检测优先级
-        - get_confidence: 获取默认置信度
+    """检测器抽象基类。
+
+    所有崩溃日志检测器必须继承此类，实现 |detect|_, |get_name|_, |get_cause_label|_。
+
+    优先级排序（数值越低越先执行）:
+
+    - ``PRIORITY_CRITICAL = 0`` — 致命级，最先执行
+    - ``PRIORITY_HIGH = 10`` — 高优先级
+    - ``PRIORITY_NORMAL = 50`` — 普通（默认）
+    - ``PRIORITY_LOW = 100`` — 低优先级
+
+    **用法**::
+
+        class MyDetector(Detector):
+            def get_name(self): return "My Detector"
+            def get_cause_label(self): return "自定义原因"
+            def detect(self, crash_log, context):
+                if "pattern" in crash_log:
+                    context.add_result(DetectionResult(
+                        detector=self.get_name(),
+                        message="检测到 pattern",
+                        confidence=0.9,
+                        cause_label=self.get_cause_label(),
+                    ))
     """
 
     PRIORITY_CRITICAL: int = 0
@@ -51,20 +57,13 @@ class Detector(ABC):
     def detect(
         self,
         crash_log: str,
-        context: AnalysisContext
-    ) -> List[DetectionResult]:
-        """
-        对崩溃日志执行检测。
-        
-        Args:
-            crash_log: 崩溃日志文本
-            context: 分析上下文，用于存储结果
-            
-        Returns:
-            检测结果列表
-            
-        Raises:
-            NotImplementedError: 子类必须实现此方法
+        context: "AnalysisContext",
+    ) -> List["DetectionResult"]:
+        """对崩溃日志执行检测，结果写入 ``context``。
+
+        :param crash_log: Minecraft 崩溃日志全文。
+        :param context: ``AnalysisContext`` 实例，承载检测结果和元数据。
+        :returns: ``DetectionResult`` 列表。
         """
         raise NotImplementedError
 

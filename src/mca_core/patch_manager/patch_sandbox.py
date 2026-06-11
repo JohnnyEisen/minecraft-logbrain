@@ -193,22 +193,29 @@ def execute_patch_sandboxed(
 ) -> SandboxResult:
     """在沙箱中安全执行补丁代码。
 
-    执行流程:
-    1. 构建受限的 builtins 上下文
-    2. 编译并执行补丁代码
-    3. 调用指定的入口函数（默认 apply()）
-    4. 返回沙箱执行结果
+    限制：所有级别禁止 ``exec/eval/compile/__import__``。
+    restricted 额外禁止 I/O；standard 允许只读文件；
+    admin 仅允许白名单模块导入。
 
-    Args:
-        code: 补丁源码
-        patch_id: 补丁 ID（用于日志）
-        level: 权限级别
-        entry_point: 入口函数名
-        entry_args: 入口函数位置参数
-        entry_kwargs: 入口函数关键字参数
+    流程：构建受限 builtins → compile 代码 → exec → 调用入口函数 → 返回结果。
 
-    Returns:
-        SandboxResult
+    :param code: 补丁 Python 源码。
+    :param patch_id: 补丁标识符（用于错误消息）。
+    :param level: |PermissionLevel|_ 权限级别（默认 RESTRICTED）。
+    :param entry_point: 入口函数名（默认 ``"apply"``）。
+    :param entry_args: 入口函数位置参数。
+    :param entry_kwargs: 入口函数关键字参数。
+    :returns: |SandboxResult|_ 执行结果（success / error / 耗时）。
+    :rtype: SandboxResult
+
+    **用法**::
+
+        result = execute_patch_sandboxed(
+            code="def apply(): return sum(range(100))",
+            patch_id="safe_patch",
+            level=PermissionLevel.RESTRICTED,
+        )
+        assert result.success
     """
     import time
 

@@ -46,11 +46,33 @@ def _invoke_callable(func: Callable[..., Any], args: tuple[Any, ...], kwargs: Di
 
 
 class BrainCore:
-    """Core Scheduler: Task Dispatch + DLC Management + Observability."""
+    """AI 语义分析核心调度器。
+
+    负责 DLC 生命周期管理、任务调度、缓存与可观测性。
+
+    **核心职责**:
+
+    - DLC 管理：注册、加载、初始化、禁用、热重载
+    - 任务调度：compute() 异步计算，支持超时、重试、优先级
+    - 缓存：LRU+TTL 结果缓存（默认 2000 条目 / 300s TTL）
+    - 可观测性：Prometheus metrics + OpenTelemetry spans
+
+    :param config_path: 可选的 JSON 配置文件路径。
+
+    **用法**::
+
+        brain = BrainCore(config_path="config/brain_config.json")
+        brain.load_builtin_dlcs()
+        result = brain.compute("analyze", crash_log=log_text)
+    """
 
     CORE_ALIASES: frozenset[str] = frozenset({"Brain Core", "BrainCore", "core"})
 
     def __init__(self, config_path: Optional[str] = None):
+        """初始化 BrainCore。
+
+        :param config_path: JSON 配置文件路径（可选）。
+        """
         self.name = "LogBrain Core Scheduler"
         self.version = __version__
 
