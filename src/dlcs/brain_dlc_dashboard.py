@@ -11,7 +11,7 @@
 
 作为 BrainDLC 子类，集成到 MCA Brain System 中。
 
-v1.5.5: 桥接 DashboardController DI，版本号统一引用 __version__。
+v2.0.0: 桥接 DashboardController DI，版本号统一引用 __version__。
 """
 from __future__ import annotations
 
@@ -58,7 +58,7 @@ class DashboardDLC(BrainDLC):
         _initialize() -> 启动监控循环
         shutdown() -> 停止监控循环，清理资源
 
-    v1.5.5: 支持通过 inject() 注入 config/audit/event_bus，
+    v2.0.0: 支持通过 inject() 注入 config/audit/event_bus，
             配置驱动阈值加载，异常检测事件发布。
     """
 

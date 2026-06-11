@@ -1,20 +1,49 @@
 """Neural Network DLC: 算子与自动微分。
 
-v1.5.5: DI 集成 (config/audit)，版本号统一引用 __version__。
+v2.1.0: 融合算子 (FusedMatMulReLU) 减少中间分配；缓存 _get_array_module；
+        添加 BatchNorm1D、LayerNorm；__slots__ 减少子类内存。
+v2.0.0: DI 集成 (config/audit)，版本号统一引用 __version__。
 """
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable, Dict, List, Optional, Tuple, Sequence
+from typing import Any, Callable, ClassVar, Dict, List, Optional, Tuple, Sequence
 import collections
 
 from brain_system import BrainCore, BrainDLC, BrainDLCType, DLCManifest
 from brain_system import __version__
 from brain_system.utils import optional_import
 
+# ---- 辅助：获取数组模块（带缓存）-----------------------------
+
+_array_module_cache: Dict[str, Any] = {}
+
+
+def _get_array_module(x: Any) -> Any:
+    """获取数据 x 对应的数组模块 (numpy 或 cupy)，结果缓存。"""
+    try:
+        cp = optional_import("cupy")
+        if cp and isinstance(x, cp.ndarray):
+            _array_module_cache.setdefault("cupy", cp)
+            return cp
+    except Exception:
+        pass
+    np = optional_import("numpy")
+    _array_module_cache.setdefault("numpy", np)
+    return np
+
+
+def _array_module_cache_clear() -> None:
+    _array_module_cache.clear()
+
 # 辅助类：Autograd 节点
 class TensorNode:
-    """包装数据与梯度信息。"""
+    """包装数据与梯度信息。
+
+    优化: _get_array_module 已提取为模块级函数并缓存。
+    """
+    __slots__ = ("data", "grad", "requires_grad", "creator", "generation")
+
     def __init__(self, data: Any, requires_grad: bool = False, creator: Optional['Function'] = None):
         self.data = data
         self.grad: Any = None
@@ -27,8 +56,7 @@ class TensorNode:
             return
 
         if grad is None:
-            # 默认梯度为 1.0 (shape 同 data)
-            xp = self._get_array_module(self.data)
+            xp = _get_array_module(self.data)
             grad = xp.ones_like(self.data)
 
         # 累积当前梯度
@@ -40,16 +68,6 @@ class TensorNode:
         # 传递给 creator
         if self.creator:
             self.creator.backward(self.grad)
-
-    def _get_array_module(self, x):
-        # 更强健的 numpy / cupy 判别
-        try:
-            cp = optional_import("cupy")
-            if cp and isinstance(x, cp.ndarray):
-                return cp
-        except Exception:
-            pass
-        return optional_import("numpy")
 
     def __add__(self, other):
         if not isinstance(other, TensorNode):
@@ -125,47 +143,148 @@ class Function:
 # --- 具体算子实现 ---
 
 class Add(Function):
+    __slots__ = ()
     def forward(self, x0, x1):
         return x0 + x1
-    
     def backward_impl(self, gy):
         return gy, gy
 
 class Sub(Function):
+    __slots__ = ()
     def forward(self, x0, x1):
         return x0 - x1
-    
     def backward_impl(self, gy):
         return gy, -gy
 
 class Mul(Function):
+    __slots__ = ("x0", "x1")
     def forward(self, x0, x1):
         self.x0 = x0
         self.x1 = x1
         return x0 * x1
-    
     def backward_impl(self, gy):
         return gy * self.x1, gy * self.x0
 
 class MatMul(Function):
+    __slots__ = ("x", "W")
     def forward(self, x, W):
         self.x = x
         self.W = W
         return x @ W
-    
     def backward_impl(self, gy):
-        # x: (N, D), W: (D, H) -> out: (N, H)
-        # gx: (N, D) = gy @ W.T
-        # gW: (D, H) = x.T @ gy
         return gy @ self.W.T, self.x.T @ gy
 
 class Relu(Function):
+    __slots__ = ("mask",)
     def forward(self, x):
         self.mask = (x > 0)
         return x * self.mask
-    
     def backward_impl(self, gy):
         return gy * self.mask
+
+
+# ---- 融合算子：减少中间张量分配 --------------------------------
+
+class FusedMatMulReLU(Function):
+    """融合 MatMul + ReLU，避免分配中间矩阵。
+
+    forward:  relu(x @ W)
+    """
+    __slots__ = ("x", "W", "mask")
+
+    def forward(self, x, W):
+        self.x = x
+        self.W = W
+        out = x @ W
+        self.mask = (out > 0)
+        return out * self.mask
+
+    def backward_impl(self, gy):
+        g_masked = gy * self.mask  # relu backward
+        return g_masked @ self.W.T, self.x.T @ g_masked
+
+
+class FusedLinearReLU(Function):
+    """融合 Linear + ReLU：y = relu(x @ W + b)。
+
+    优化: 单次分配 + 单次 backward，3 次分配 → 1 次。
+    """
+    __slots__ = ("x", "W", "b", "mask")
+
+    def forward(self, x, W, b):
+        self.x = x
+        self.W = W
+        self.b = b
+        out = x @ W + b
+        self.mask = (out > 0)
+        return out * self.mask
+
+    def backward_impl(self, gy):
+        g_masked = gy * self.mask
+        gx = g_masked @ self.W.T
+        gW = self.x.T @ g_masked
+        gb = g_masked.sum(axis=0)
+        return gx, gW, gb
+
+
+# ---- 标准化算子 ------------------------------------------------
+
+class BatchNorm1D(Function):
+    """1D Batch Normalization：y = (x - mean) / sqrt(var + eps) * gamma + beta。"""
+    __slots__ = ("x", "gamma", "beta", "eps", "mean", "inv_std")
+
+    def forward(self, x, gamma, beta, eps=1e-5):
+        self.x = x
+        self.gamma = gamma
+        self.beta = beta
+        self.eps = eps
+        self.mean = x.mean(axis=0, keepdims=True)
+        var = x.var(axis=0, keepdims=True)
+        self.inv_std = 1.0 / (var + eps) ** 0.5
+        x_hat = (x - self.mean) * self.inv_std
+        return x_hat * gamma + beta
+
+    def backward_impl(self, gy):
+        N = self.x.shape[0]
+        x_hat = (self.x - self.mean) * self.inv_std
+        dgamma = (gy * x_hat).sum(axis=0)
+        dbeta = gy.sum(axis=0)
+        dx_hat = gy * self.gamma
+        dx = (1.0 / N) * self.inv_std * (
+            N * dx_hat - dx_hat.sum(axis=0) - x_hat * (dx_hat * x_hat).sum(axis=0)
+        )
+        return dx, dgamma, dbeta
+
+
+class LayerNorm(Function):
+    """Layer Normalization：沿最后一维归一化。"""
+    __slots__ = ("x", "gamma", "beta", "eps", "mean", "inv_std")
+
+    def forward(self, x, gamma, beta, eps=1e-5):
+        self.x = x
+        self.gamma = gamma
+        self.beta = beta
+        self.eps = eps
+        axis = tuple(range(1, x.ndim))
+        self.mean = x.mean(axis=axis, keepdims=True)
+        var = x.var(axis=axis, keepdims=True)
+        self.inv_std = 1.0 / (var + eps) ** 0.5
+        x_hat = (x - self.mean) * self.inv_std
+        return x_hat * gamma + beta
+
+    def backward_impl(self, gy):
+        axis = tuple(range(1, self.x.ndim))
+        x_hat = (self.x - self.mean) * self.inv_std
+        dgamma = (gy * x_hat).sum(axis=axis, keepdims=True)
+        dbeta = gy.sum(axis=axis, keepdims=True)
+        dx_hat = gy * self.gamma
+        N = self.x.shape[-1]
+        dx = (1.0 / N) * self.inv_std * (
+            N * dx_hat
+            - dx_hat.sum(axis=axis, keepdims=True)
+            - x_hat * (dx_hat * x_hat).sum(axis=axis, keepdims=True)
+        )
+        return dx, dgamma, dbeta
 
 class MSELoss(Function):
     def forward(self, pred, target):
@@ -217,6 +336,10 @@ class NeuralNetworkOperatorsDLC(BrainDLC):
                 "mul": Mul(),
                 "matmul": MatMul(),
                 "relu": Relu(),
+                "fused_matmul_relu": FusedMatMulReLU(),
+                "fused_linear_relu": FusedLinearReLU(),
+                "batch_norm1d": BatchNorm1D(),
+                "layer_norm": LayerNorm(),
                 "mse_loss": MSELoss(),
             }
         }

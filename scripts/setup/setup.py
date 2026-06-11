@@ -1,4 +1,7 @@
 from setuptools import setup, find_packages
+import sys
+sys.path.insert(0, "src")
+from brain_system import __version__
 
 # Read dependencies from requirements.txt
 with open("requirements.txt", encoding="utf-8") as f:
@@ -12,9 +15,9 @@ with open("requirements.txt", encoding="utf-8") as f:
             requirements.append(line)
 
 setup(
-    name="mca-brain-system",
-    version="1.0.0",
-    description="Minecraft Crash Analyzer (Legacy regex parser + optional workflow engine)",
+    name="minecraft-logbrain",
+    version=__version__,
+    description="Minecraft LogBrain — AI-powered crash log diagnosis platform",
     author="Brain AI Systems",
     packages=find_packages(include=[
         "mca_core", "mca_core.*", 
@@ -27,7 +30,7 @@ setup(
     ]),
     include_package_data=True,
     python_requires=">=3.10",
-    url="https://github.com/JohnnyEisen/MCA-Brain-System",
+    url="https://github.com/JohnnyEisen/minecraft-logbrain",
     install_requires=requirements,
     entry_points={
         "console_scripts": [

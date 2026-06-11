@@ -82,7 +82,7 @@ const App = {
           </a>
         </div>
         <div class="sidebar-footer">
-          v1.0.0 | MCA Brain System
+          v2.1.0 | MCA Brain System
         </div>
       </nav>
       <main class="main">

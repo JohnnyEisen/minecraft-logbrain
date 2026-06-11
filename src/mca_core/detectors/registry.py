@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import importlib
 import inspect
+import json
 import logging
+import os
 from concurrent.futures import Executor, ThreadPoolExecutor, wait
 from typing import TYPE_CHECKING, Any, Callable, Iterable, List, Optional, Set, Type
 
@@ -26,22 +28,24 @@ logger = logging.getLogger(__name__)
 
 class DetectorRegistry:
     """
-    检测器注册表（策略模式 + 单例模式）。
-    
+    检测器注册表（策略模式 + 单例模式 + 懒加载）。
+
     支持检测器的注册、自动发现、优先级排序和执行。
     提供串行和并行两种执行模式。
-    
+
     单例模式确保全局只有一个注册表实例，避免重复初始化检测器。
-    
+    懒加载：内置检测器仅在首次 list() / run_all() 时实例化，加速冷启动。
+
     类属性:
         _instance: 单例实例
         _builtin_class_cache: 内置检测器类缓存，避免重复扫描磁盘
         _inited: 是否已初始化缓存
-    
+
     Attributes:
         _detectors: 已注册的检测器列表
         _sorted: 是否已按优先级排序
-    
+        _loaded: 是否已完成懒加载
+
     方法:
         - get_instance: 获取单例实例（推荐）
         - register: 注册检测器
@@ -50,6 +54,7 @@ class DetectorRegistry:
         - run_all: 串行执行所有检测器
         - run_all_parallel: 并行执行所有检测器
         - reset: 重置单例（仅用于测试）
+        - reset_for_di: 重置单例并返回新实例（用于 DI 容器）
     """
 
     _instance: Optional["DetectorRegistry"] = None
@@ -94,19 +99,34 @@ class DetectorRegistry:
     def reset(cls) -> None:
         """
         重置单例实例。
-        
+
         仅用于测试场景，生产代码不应调用。
         """
         cls._instance = None
         cls._builtin_class_cache.clear()
         cls._inited = False
 
+    @classmethod
+    def reset_for_di(cls) -> "DetectorRegistry":
+        """
+        重置单例并返回新实例（用于 DI 容器）。
+
+        适用场景：测试、多实例 DI 容器。
+        生产代码应优先使用 get_instance()。
+
+        Returns:
+            新的 DetectorRegistry 实例（已重置单例）
+        """
+        cls.reset()
+        instance = cls()
+        return instance
+
     def __init__(self, detectors: Optional[Iterable[Detector]] = None) -> None:
         """
         初始化检测器注册表。
-        
+
         注意：单例模式下，后续调用不会重新初始化。
-        
+
         Args:
             detectors: 初始检测器集合
         """
@@ -114,7 +134,15 @@ class DetectorRegistry:
             return
         self._detectors: List[Detector] = list(detectors or [])
         self._sorted: bool = False
+        self._loaded: bool = False
         self._initialized: bool = True
+
+    def _ensure_loaded(self) -> None:
+        """懒加载：仅在首次需要检测器列表时才触发内置检测器发现与实例化。"""
+        if self._loaded:
+            return
+        self.load_builtins()
+        self._loaded = True
 
     def register(self, detector: Detector) -> Detector:
         """
@@ -133,10 +161,11 @@ class DetectorRegistry:
     def list(self) -> List[Detector]:
         """
         获取按优先级排序的检测器列表。
-        
+
         Returns:
             排序后的检测器列表（优先级低的在前）
         """
+        self._ensure_loaded()
         if not self._sorted:
             self._detectors.sort(key=lambda d: d.get_priority())
             self._sorted = True
@@ -255,13 +284,14 @@ class DetectorRegistry:
     def run_all(self, analyzer: Any) -> List[DetectionResult]:
         """
         串行执行所有检测器。
-        
+
         Args:
             analyzer: 分析器实例
-            
+
         Returns:
             检测结果列表
         """
+        self._ensure_loaded()
         crash_log = getattr(analyzer, "crash_log", "") or ""
         context = AnalysisContext(analyzer=analyzer, crash_log=crash_log)
         emit_fn = self._create_event_emitter(analyzer)
@@ -287,15 +317,16 @@ class DetectorRegistry:
     ) -> List[DetectionResult]:
         """
         并行执行所有检测器。
-        
+
         Args:
             analyzer: 分析器实例
             max_workers: 最大工作线程数（当 executor 为 None 时生效）
             executor: 可选的自定义 Executor（例如来自 BrainCore）
-            
+
         Returns:
             检测结果列表
         """
+        self._ensure_loaded()
         crash_log = getattr(analyzer, "crash_log", "") or ""
         context = AnalysisContext(analyzer=analyzer, crash_log=crash_log)
         emit_fn = self._create_event_emitter(analyzer)

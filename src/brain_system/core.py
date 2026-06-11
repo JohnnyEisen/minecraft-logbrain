@@ -20,6 +20,7 @@ from packaging.version import Version
 
 from .discovery import iter_dlc_files, load_dlc_classes_from_file
 from .dlc import BrainDLC
+from .dlc_manager import DLCManager
 from .models import DLCManifest, DLCState
 
 from brain_system import __version__
@@ -62,10 +63,7 @@ class BrainCore:
         self._public_keys_pem: list[bytes] = []
         self._load_public_keys()
 
-        self.dlcs: Dict[str, BrainDLC] = {}
-        self.dlc_manifests: Dict[str, DLCManifest] = {}
-        self.dlc_dependencies: Dict[str, Set[str]] = {}
-
+        self._dlc_manager = DLCManager(self)
         self.computational_units: Dict[str, Any] = {}
         self.result_cache = LruTtlCache(
             max_entries=int(self.config.get("cache_max_entries", 2_000)),
@@ -361,15 +359,6 @@ class BrainCore:
 
         logging.info("配置已热更新")
 
-    def _notify_dlcs_config_changed(self) -> None:
-        """通知所有已激活的 DLC 配置已变更。"""
-        for dlc in self.dlcs.values():
-            try:
-                if dlc.state in (DLCState.ACTIVE, DLCState.SUSPENDED):
-                    dlc.on_config_changed(dict(self.config))
-            except Exception as e:
-                logging.debug("DLC %s 配置更新通知失败: %s", dlc.manifest.name, e)
-
     def _validate_config(self, config: dict[str, Any]) -> list[str]:
         """验证配置参数。
 
@@ -452,245 +441,46 @@ class BrainCore:
             logging.warning("Leader 选举不可用: %s", e)
             return None
 
-    # ---------------- DLC 管理 ----------------
+    # ---------------- DLC 管理（委托至 DLCManager） ----------------
+
+    @property
+    def dlcs(self) -> Dict[str, BrainDLC]:
+        """向后兼容：直接访问 DLC 字典。"""
+        return self._dlc_manager.dlcs
+
+    @property
+    def dlc_manifests(self) -> Dict[str, DLCManifest]:
+        """向后兼容：直接访问 DLC manifest 字典。"""
+        return self._dlc_manager.dlc_manifests
+
+    @property
+    def dlc_dependencies(self) -> Dict[str, Set[str]]:
+        """向后兼容：直接访问 DLC 依赖字典。"""
+        return self._dlc_manager.dlc_dependencies
 
     def register_dlc(self, dlc: BrainDLC) -> None:
-        manifest = dlc.get_manifest()
-
-        if bool(self.config.get("dlc_strict_dependency_check", True)):
-            core_aliases = self.CORE_ALIASES | {self.name}
-            for dep in manifest.dependencies:
-                self._validate_dependency(dep)
-                dep_name, _ = self._parse_dependency(dep)
-                if dep_name and dep_name not in core_aliases:
-                    dep_dlc = self.dlcs.get(dep_name)
-                    if dep_dlc is None:
-                        raise RuntimeError(f"依赖 DLC 未加载: {dep_name}")
-                    if dep_dlc.state in (DLCState.FAILED, DLCState.UNLOADED):
-                        raise RuntimeError(f"依赖 DLC 未就绪: {dep_name} (state={dep_dlc.state.value})")
-
-        if manifest.name in self.dlcs:
-            logging.warning("DLC 已存在，将替换: %s", manifest.name)
-            self.unregister_dlc(manifest.name)
-
-        self.dlcs[manifest.name] = dlc
-        self.dlc_manifests[manifest.name] = manifest
-        self.dlc_dependencies[manifest.name] = set(manifest.dependencies)
-
-        dlc.initialize()
-        logging.info("已注册DLC: %s v%s (state=%s)", manifest.name, manifest.version, dlc.state.value)
+        self._dlc_manager.register(dlc)
 
     def unregister_dlc(self, name: str) -> None:
-        dlc = self.dlcs.pop(name, None)
-        self.dlc_manifests.pop(name, None)
-        self.dlc_dependencies.pop(name, None)
-        if dlc is not None:
-            try:
-                dlc.shutdown()
-            except Exception as e:
-                logging.warning("DLC shutdown failed for %s: %s", name, e)
+        self._dlc_manager.unregister(name)
 
     def enable_dlc(self, name: str) -> bool:
-        """启用指定 DLC。
-
-        Args:
-            name: DLC 名称。
-
-        Returns:
-            是否成功启用。
-        """
-        dlc = self.dlcs.get(name)
-        if dlc is None:
-            logging.warning("DLC 不存在: %s", name)
-            return False
-        try:
-            dlc.enable()
-            logging.info("DLC 已启用: %s (state=%s)", name, dlc.state.value)
-            return True
-        except Exception as e:
-            logging.error("启用 DLC 失败 %s: %s", name, e)
-            return False
+        return self._dlc_manager.enable(name)
 
     def disable_dlc(self, name: str) -> bool:
-        """禁用指定 DLC。
-
-        Args:
-            name: DLC 名称。
-
-        Returns:
-            是否成功禁用。
-        """
-        dlc = self.dlcs.get(name)
-        if dlc is None:
-            logging.warning("DLC 不存在: %s", name)
-            return False
-        try:
-            dlc.disable()
-            logging.info("DLC 已禁用: %s (state=%s)", name, dlc.state.value)
-            return True
-        except Exception as e:
-            logging.error("禁用 DLC 失败 %s: %s", name, e)
-            return False
+        return self._dlc_manager.disable(name)
 
     def suspend_dlc(self, name: str) -> bool:
-        """挂起指定 DLC。
-
-        Args:
-            name: DLC 名称。
-
-        Returns:
-            是否成功挂起。
-        """
-        dlc = self.dlcs.get(name)
-        if dlc is None:
-            logging.warning("DLC 不存在: %s", name)
-            return False
-        try:
-            dlc.suspend()
-            logging.info("DLC 已挂起: %s (state=%s)", name, dlc.state.value)
-            return True
-        except Exception as e:
-            logging.error("挂起 DLC 失败 %s: %s", name, e)
-            return False
+        return self._dlc_manager.suspend(name)
 
     def resume_dlc(self, name: str) -> bool:
-        """恢复挂起的 DLC。
-
-        Args:
-            name: DLC 名称。
-
-        Returns:
-            是否成功恢复。
-        """
-        dlc = self.dlcs.get(name)
-        if dlc is None:
-            logging.warning("DLC 不存在: %s", name)
-            return False
-        try:
-            dlc.resume()
-            logging.info("DLC 已恢复: %s (state=%s)", name, dlc.state.value)
-            return True
-        except Exception as e:
-            logging.error("恢复 DLC 失败 %s: %s", name, e)
-            return False
+        return self._dlc_manager.resume(name)
 
     def reload_dlc_file(self, dlc_path: str) -> tuple[int, bool]:
-        """热升级：卸载同名 DLC，再加载新版本，支持回滚。
-        
-        Returns:
-            tuple[int, bool]: (成功注册数量, 是否成功)
-        """
-        path = Path(dlc_path)
-        if not path.exists() or not path.is_file():
-            return 0, False
-
-        if not self._verify_dlc_file_signature(path):
-            return 0, False
-
-        try:
-            classes = load_dlc_classes_from_file(path)
-        except Exception as e:
-            logging.error("加载DLC失败 %s: %s", path.name, type(e).__name__)
-            return 0, False
-
-        # 备份现有 DLC 以便回滚
-        backup: dict[str, tuple[BrainDLC, DLCManifest, set[str]]] = {}
-        for cls in classes:
-            try:
-                inst = cls(self)
-                manifest = inst.get_manifest()
-                if manifest.name in self.dlcs:
-                    old_dlc = self.dlcs[manifest.name]
-                    old_manifest = self.dlc_manifests[manifest.name]
-                    old_deps = self.dlc_dependencies[manifest.name]
-                    backup[manifest.name] = (old_dlc, old_manifest, old_deps)
-            except Exception:
-                pass
-
-        # 尝试加载新版本
-        count = 0
-        failed = False
-        loaded_names: list[str] = []
-
-        for cls in classes:
-            try:
-                inst = cls(self)
-                manifest = inst.get_manifest()
-                if manifest.name in self.dlcs:
-                    self.unregister_dlc(manifest.name)
-                self.register_dlc(inst)
-                loaded_names.append(manifest.name)
-                count += 1
-            except Exception as e:
-                logging.error("注册DLC失败 %s(%s): %s", path.name, cls.__name__, type(e).__name__)
-                failed = True
-                break
-
-        if failed:
-            # 回滚：卸载已加载的新版本，恢复旧版本
-            logging.warning("DLC热加载失败，正在回滚...")
-            for name in loaded_names:
-                try:
-                    self.unregister_dlc(name)
-                except Exception:
-                    pass
-            
-            for name, (old_dlc, old_manifest, old_deps) in backup.items():
-                try:
-                    self.dlcs[name] = old_dlc
-                    self.dlc_manifests[name] = old_manifest
-                    self.dlc_dependencies[name] = old_deps
-                    logging.info("已回滚DLC: %s", name)
-                except Exception as e:
-                    logging.error("回滚DLC失败 %s: %s", name, e)
-            
-            return 0, False
-
-        if self.obs.metrics_enabled and self.obs.dlc_loaded is not None:
-            try:
-                self.obs.dlc_loaded.inc(count)
-            except Exception as e:
-                logging.debug("Failed to increment dlc_loaded metric: %s", e)
-        
-        return count, True
+        return self._dlc_manager.reload_dlc_file(dlc_path)
 
     def load_dlc_file(self, dlc_path: str, *, allow_replace: bool = False) -> int:
-        """从文件加载 DLC，返回成功注册的 DLC 类数量。
-
-        安全：支持 DLC 文件签名验证，避免动态加载任意代码执行。
-        """
-        path = Path(dlc_path)
-        if not path.exists() or not path.is_file():
-            return 0
-
-        # DLC 签名验证必须发生在 import/exec 之前
-        if not self._verify_dlc_file_signature(path):
-            return 0
-
-        try:
-            classes = load_dlc_classes_from_file(path)
-        except Exception as e:
-            logging.error("加载DLC失败 %s: %s", path.name, type(e).__name__)
-            return 0
-
-        count = 0
-        for cls in classes:
-            try:
-                inst = cls(self)
-                manifest = inst.get_manifest()
-                if allow_replace and manifest.name in self.dlcs:
-                    self.unregister_dlc(manifest.name)
-                self.register_dlc(inst)
-                count += 1
-            except Exception as e:
-                logging.error("注册DLC失败 %s(%s): %s", path.name, cls.__name__, type(e).__name__)
-
-        if self.obs.metrics_enabled and self.obs.dlc_loaded is not None:
-            try:
-                self.obs.dlc_loaded.inc(count)
-            except Exception as e:
-                logging.debug("Failed to increment dlc_loaded metric: %s", e)
-        return count
+        return self._dlc_manager.load_dlc_file(dlc_path, allow_replace=allow_replace)
 
     def _topological_sort(
         self, graph: dict[str, list[str]], priority_map: dict[str, int] | None = None
@@ -741,104 +531,16 @@ class BrainCore:
         return sorted_result
 
     def load_all_dlcs(self, search_paths: Optional[list[str]] = None) -> int:
-        """从搜索路径加载 DLC。
-
-        使用拓扑排序确保依赖 DLC 先于被依赖 DLC 加载。
-        每个 DLC 类只实例化一次，避免重复创建。
-        """
-
-        paths = search_paths or list(self.config.get("dlc_search_paths", ["./dlcs"]))
-        dlc_files = iter_dlc_files(paths)
-
-        # 避免把本包源码目录误选为 DLC 目录（会触发相对导入失败）
-        try:
-            package_dir = Path(__file__).resolve().parent
-            dlc_files = [p for p in dlc_files if not p.resolve().is_relative_to(package_dir)]
-        except Exception as e:
-            logging.debug("Path.is_relative_to not available (Python < 3.9?): %s", e)
-
-        # 第一阶段：发现所有 DLC 文件，收集候选类
-        pending_cls: list[type[BrainDLC]] = []
-        for file_path in dlc_files:
-            if not self._verify_dlc_file_signature(file_path):
-                continue
-            try:
-                classes = load_dlc_classes_from_file(file_path)
-                pending_cls.extend(classes)
-            except Exception as e:
-                logging.error("读取 DLC 类失败 %s: %s", file_path, e)
-
-        # 第二阶段：解析 manifest，构建依赖图和名称→类映射
-        graph: dict[str, list[str]] = {}
-        priority_map: dict[str, int] = {}
-        name_to_cls: dict[str, type[BrainDLC]] = {}
-        core_aliases = self.CORE_ALIASES | {self.name}
-
-        for cls in pending_cls:
-            try:
-                temp_inst = cls(self)
-                manifest = temp_inst.get_manifest()
-                name = manifest.name
-                priority_map[name] = int(manifest.priority)
-
-                deps: list[str] = []
-                for dep_raw in manifest.dependencies:
-                    dep_name, _ = self._parse_dependency(dep_raw)
-                    if dep_name and dep_name not in core_aliases:
-                        deps.append(dep_name)
-
-                graph[name] = deps
-                name_to_cls[name] = cls
-            except Exception as e:
-                logging.debug("解析 DLC 清单失败 %s: %s", getattr(cls, "__name__", str(cls)), e)
-
-        # 第三阶段：拓扑排序
-        sorted_names = self._topological_sort(graph, priority_map)
-        if sorted_names is None:
-            logging.error("DLC 依赖图存在循环依赖，无法加载")
-            return 0
-
-        # 第四阶段：按排序顺序注册（每个类只实例化一次）
-        loaded = 0
-        for name in sorted_names:
-            cls = name_to_cls.get(name)
-            if cls is None:
-                continue
-            try:
-                inst = cls(self)
-                self.register_dlc(inst)
-                loaded += 1
-            except Exception as e:
-                logging.error("DLC 注册失败 %s: %s", name, e)
-
-        logging.info("已加载 %d 个DLC（来自 %d 个文件）", loaded, len(dlc_files))
-        return loaded
+        return self._dlc_manager.load_all(search_paths)
 
     def get_dlc_status(self) -> Dict[str, Any]:
-        status: Dict[str, Any] = {}
-        for name, dlc in self.dlcs.items():
-            manifest = self.dlc_manifests[name]
-            status[name] = {
-                "version": manifest.version,
-                "type": manifest.dlc_type.value,
-                "enabled": dlc.enabled,
-                "state": dlc.state.value,
-                "dependencies": list(self.dlc_dependencies[name]),
-                "initialized": bool(getattr(dlc, "_initialized", False)),
-            }
-        return status
+        return self._dlc_manager.get_status()
 
     def get_computational_unit(self, unit_type: str) -> Any:
-        if unit_type in self.computational_units:
-            return self.computational_units[unit_type]
+        return self._dlc_manager.get_computational_unit(unit_type)
 
-        for dlc in self.dlcs.values():
-            units = dlc.provide_computational_units()
-            if unit_type in units:
-                self.computational_units[unit_type] = units[unit_type]
-                return units[unit_type]
-
-        raise ValueError(f"未找到计算单元类型: {unit_type}")
+    def _notify_dlcs_config_changed(self) -> None:
+        self._dlc_manager.notify_config_changed()
 
     # ---------------- 任务执行 / 缓存 ----------------
 

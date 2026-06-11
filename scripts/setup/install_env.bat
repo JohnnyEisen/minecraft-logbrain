@@ -1,7 +1,7 @@
 @echo off
 chcp 65001 >nul
 echo ===================================================
-echo     Minecraft Crash Analyzer - 环境安装脚本
+echo     Minecraft LogBrain - 环境安装脚本
 echo ===================================================
 echo.
 

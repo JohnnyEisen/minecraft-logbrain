@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "minecraft-logbrain"
 dynamic = ["version"]
-description = "Minecraft Crash Analyzer with Brain AI System"
+description = "Minecraft LogBrain — AI-powered crash log diagnosis platform"
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [{ name = "MCA Team" }]
@@ -18,7 +18,7 @@ dependencies = [
 [project.urls]
 Homepage = "https://github.com/JohnnyEisen/minecraft-logbrain"
 Repository = "https://github.com/JohnnyEisen/minecraft-logbrain.git"
-Issues = "https://github.com/JohnnyEisen/MCA-Brain-System/issues"
+Issues = "https://github.com/JohnnyEisen/minecraft-logbrain/issues"
 
 [project.optional-dependencies]
 ai = [

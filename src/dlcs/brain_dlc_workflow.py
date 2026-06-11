@@ -1,6 +1,6 @@
 """Neural Workflow DLC: 训练/推理流水线管理。
 
-v1.5.5: DI 集成 (config/audit)，版本号统一引用 __version__。
+v2.0.0: DI 集成 (config/audit)，版本号统一引用 __version__。
 """
 from __future__ import annotations
 

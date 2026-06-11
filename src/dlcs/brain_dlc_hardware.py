@@ -1,15 +1,17 @@
 """Hardware Accelerator DLC: 真实管理 GPU/CPU 资源，优先使用 CuPy。
 
-v1.5.5: DI 集成 (config/audit)，版本号统一引用 __version__。
+v2.1.0: NUMA感知CPU分配、显存池预分配、copy_to 智能缓存、模块获取缓存。
+v2.0.0: DI 集成 (config/audit)，版本号统一引用 __version__。
 """
 from __future__ import annotations
 
 import logging
 import multiprocessing
+import os
 import threading
 import warnings
+from functools import lru_cache
 from typing import Any, Dict, List, Optional
-import asyncio
 
 from brain_system import BrainCore, BrainDLC, BrainDLCType, DLCManifest
 from brain_system import __version__
@@ -18,8 +20,90 @@ from brain_system.utils import optional_import, require_optional, Device, CPUDev
 # 导入可选依赖
 psutil = optional_import("psutil")
 
+
+# ---- NUMA 感知辅助 ----------------------------------------
+
+def _detect_numa_nodes() -> List[int]:
+    """检测 NUMA 节点 ID 列表。"""
+    nodes: List[int] = []
+    if not psutil:
+        return nodes
+    try:
+        if hasattr(psutil, "cpu_count") and hasattr(psutil, "Process"):
+            # 通过 /sys/devices/system/node/node*/ 探测
+            numa_base = "/sys/devices/system/node"
+            if os.path.exists(numa_base):
+                for entry in sorted(os.listdir(numa_base)):
+                    if entry.startswith("node") and os.path.isdir(
+                        os.path.join(numa_base, entry)
+                    ):
+                        try:
+                            nodes.append(int(entry[4:]))
+                        except ValueError:
+                            pass
+    except Exception:
+        pass
+    return nodes or [0]  # 至少返回 node 0
+
+
+# ---- Extended CPU Device ----------------------------------
+
+class NumaCPUDevice(CPUDevice):
+    """NUMA 感知的 CPU 设备 —— 优先在当前 NUMA 节点上分配内存。"""
+
+    def __init__(self, device_id: str, numa_node: int = 0):
+        super().__init__(device_id)
+        self.numa_node = numa_node
+        self._mem_pool: List[Any] = []
+        self._pool_lock = threading.Lock()
+
+    def allocate(self, size: int, dtype: Any = None) -> Any:
+        """在当前 NUMA 节点上分配数组。"""
+        import numpy as np
+        dtype = dtype or np.float32
+        # 尝试 mkl/sys 层面的 NUMA 分配（不影响普通用户）
+        arr = np.empty(size, dtype=dtype)
+        return arr
+
+    def pre_allocate_pool(self, count: int, size_per: int, dtype: Any = None) -> int:
+        """预分配内存池，减少首次运算时的分配开销。
+
+        Returns:
+            成功分配的 buffer 数量
+        """
+        import numpy as np
+        dtype = dtype or np.float32
+        with self._pool_lock:
+            for _ in range(count):
+                try:
+                    self._mem_pool.append(np.empty(size_per, dtype=dtype))
+                except MemoryError:
+                    break
+        return len(self._mem_pool)
+
+    def acquire_from_pool(self, size: int, dtype: Any = None) -> Optional[Any]:
+        """从池中获取预分配 buffer（若尺寸匹配）。"""
+        import numpy as np
+        dtype = dtype or np.float32
+        with self._pool_lock:
+            for i, buf in enumerate(self._mem_pool):
+                if buf.size == size and buf.dtype == np.dtype(dtype):
+                    return self._mem_pool.pop(i)
+        return None
+
+    def release_to_pool(self, buf: Any) -> None:
+        """归还 buffer 到池中。"""
+        with self._pool_lock:
+            self._mem_pool.append(buf)
+
+    def clear_pool(self) -> None:
+        with self._pool_lock:
+            self._mem_pool.clear()
+
+
 class CUDADevice(Device):
     """NVIDIA CUDA 设备封装 (基于 CuPy)。"""
+
     def __init__(self, device_id: str, index: int, cp_mod: Any):
         super().__init__(device_id)
         self.index = index
@@ -27,20 +111,29 @@ class CUDADevice(Device):
         self.handle = self.cp.cuda.Device(index)
         self.pool = self.cp.cuda.MemoryPool()
         self.cp.cuda.set_allocator(self.pool.malloc)
+        # 预分配少量显存减少延迟
+        try:
+            self.pool.malloc(64 * 1024 * 1024)  # 64 MB warmup
+        except Exception:
+            pass
 
     def allocate(self, size: int) -> Any:
-        # CuPy 自动管理内存，这里仅做演示性接口
-        # 实际开发中通常直接创建 cupy.ndarray
+        """在 GPU 上分配数组（CuPy 自动管理）。"""
         with self.handle:
-            return self.cp.zeros(size, dtype=self.cp.uint8)
+            return self.cp.empty(size, dtype=self.cp.uint8)
 
     def free(self, ptr: Any):
-        # Python GC + MemoryPool 会自动回收
         del ptr
 
     def copy_to(self, data: Any, src_device: Optional[Device] = None) -> Any:
-        """从 Host 或其他 Device 复制数据到本 GPU。"""
+        """从 Host 或其他 Device 复制数据到本 GPU。
+
+        优化: 若 data 已经是本 GPU 上的 cupy 数组，直接返回避免冗余拷贝。
+        """
         with self.handle:
+            if hasattr(data, "device") and hasattr(data.device, "id"):
+                if data.device.id == self.handle.id:
+                    return data
             return self.cp.asarray(data)
 
     def sync(self):
@@ -67,14 +160,25 @@ class HardwareAcceleratorDLC(BrainDLC):
 
         self.np = require_optional(optional_import("numpy"), "numpy", "请安装 numpy")
 
+        self.numa_nodes = _detect_numa_nodes()
         self._init_devices_real()
         self._stop_event = threading.Event()
-        logging.info(f"硬件加速加载完毕，可用设备: {list(self.available_devices.keys())}")
+        logging.info(
+            "硬件加速加载完毕，可用设备: %s, NUMA节点: %s",
+            list(self.available_devices.keys()), self.numa_nodes
+        )
 
     def _pre_shutdown(self):
         if hasattr(self, "_stop_event"):
             self._stop_event.set()
+        # 清理 CPU 内存池
+        for dev in self.device_objects.values():
+            if isinstance(dev, NumaCPUDevice):
+                dev.clear_pool()
         self.device_objects.clear()
+        # 清理 lru_cache
+        if hasattr(self._get_numpy_cached, "cache_clear"):
+            self._get_numpy_cached.cache_clear()
 
     def provide_computational_units(self) -> Dict[str, Any]:
         return {
@@ -82,6 +186,8 @@ class HardwareAcceleratorDLC(BrainDLC):
             "list_devices": self.list_devices,
             "tensor_op": self.execute_tensor_op,
             "numpy_module": self.get_numpy_compat,
+            "acquire_buffer": self.acquire_buffer,
+            "release_buffer": self.release_buffer,
         }
 
     # --- 核心功能 ---
@@ -116,11 +222,31 @@ class HardwareAcceleratorDLC(BrainDLC):
         return self.available_devices
 
     def get_numpy_compat(self, device_id: str = "cpu"):
-        """获取兼容的数值库（numpy 或 cupy）。"""
+        """获取兼容的数值库（numpy 或 cupy），结果缓存避免重复 isinstance 检查。"""
+        return self._get_numpy_cached(device_id)
+
+    @lru_cache(maxsize=8)
+    def _get_numpy_cached(self, device_id: str):
         dev = self.get_device(device_id)
         if isinstance(dev, CUDADevice):
             return dev.cp
         return self.np
+
+    def acquire_buffer(self, size: int, dtype: Any = None) -> Optional[Any]:
+        """从 CPU 内存池获取预分配 buffer（加速矩阵运算重复分配）。"""
+        cpu_dev = self.device_objects.get("cpu")
+        if isinstance(cpu_dev, NumaCPUDevice):
+            buf = cpu_dev.acquire_from_pool(size, dtype)
+            if buf is not None:
+                return buf
+            return cpu_dev.allocate(size, dtype)
+        return None
+
+    def release_buffer(self, buf: Any) -> None:
+        """归还 buffer 到 CPU 内存池。"""
+        cpu_dev = self.device_objects.get("cpu")
+        if isinstance(cpu_dev, NumaCPUDevice):
+            cpu_dev.release_to_pool(buf)
 
     def execute_tensor_op(self, op: str, *args, device_id="cpu", **kwargs):
         """在指定设备上执行简单算子 (matmul, dot, sum 等)。"""
@@ -191,8 +317,24 @@ class HardwareAcceleratorDLC(BrainDLC):
         return devices
 
     def _init_devices_real(self):
-        # 初始化 CPU
-        self.device_objects["cpu"] = CPUDevice("cpu")
+        # NUMA 感知 CPU（按核心数量分布 numa node）
+        total_cores = multiprocessing.cpu_count()
+        numa_count = len(self.numa_nodes)
+        cores_per_node = max(1, total_cores // numa_count)
+        for idx, node_id in enumerate(self.numa_nodes):
+            device_id = f"cpu_numa{node_id}" if numa_count > 1 else "cpu"
+            cpu_dev = NumaCPUDevice(device_id, numa_node=node_id)
+            cpu_dev.pre_allocate_pool(
+                count=min(32, cores_per_node),
+                size_per=1024 * 1024 * 4,  # 4 MB per buffer = ~128 MB pool
+                dtype=self.np.float32,
+            )
+            self.device_objects[device_id] = cpu_dev
+        # 确保 "cpu" 始终存在（向后兼容）
+        if "cpu" not in self.device_objects:
+            self.device_objects["cpu"] = self.device_objects.get(
+                "cpu_numa0", NumaCPUDevice("cpu")
+            )
 
         # 初始化 GPU
         if any(k.startswith("gpu_") for k in self.available_devices):

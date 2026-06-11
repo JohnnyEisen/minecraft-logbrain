@@ -69,7 +69,7 @@ LOGS_DIR: Final[str] = os.path.join(ROOT_DIR, "logs")
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(LOGS_DIR, exist_ok=True)
 
-WINDOW_TITLE: Final[str] = "Minecraft Crash Analyzer with Brain AI System"
+WINDOW_TITLE: Final[str] = "Minecraft LogBrain"
 WINDOW_DEFAULT_SIZE: Final[str] = "1280x850"
 WINDOW_MIN_WIDTH: Final[int] = 1000
 WINDOW_MIN_HEIGHT: Final[int] = 700

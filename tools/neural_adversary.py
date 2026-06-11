@@ -103,6 +103,7 @@ class NeuralAdversaryEngine:
     def _init_numpy(self):
         import numpy as np
         rng = np.random.default_rng()
+        self._np = np
         self.weights = {
             'W1': rng.standard_normal((INPUT_SIZE, HIDDEN_SIZE)) * np.sqrt(2/INPUT_SIZE),
             'b1': np.zeros(HIDDEN_SIZE),
@@ -113,16 +114,14 @@ class NeuralAdversaryEngine:
         }
 
     def _relu(self, x):
-        import numpy as np
-        return np.maximum(0, x)
+        return self._np.maximum(0, x)
 
     def _softmax(self, x):
-        import numpy as np
-        e_x = np.exp(x - np.max(x))
+        e_x = self._np.exp(x - self._np.max(x))
         return e_x / e_x.sum()
 
     def _predict_numpy(self, inputs) -> int:
-        import numpy as np
+        np = self._np
         x = np.array(inputs)
         z1 = np.dot(x, self.weights['W1']) + self.weights['b1']
         a1 = self._relu(z1)

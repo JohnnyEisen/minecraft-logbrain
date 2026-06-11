@@ -4,6 +4,13 @@ import site
 import sys
 from pathlib import Path
 
+# 从包元数据获取版本号
+try:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "src"))
+    from brain_system import __version__
+except ImportError:
+    __version__ = "0.0.0"
+
 # 定义需要作为外部依赖分离的库
 # 这些库将被从 EXE 中排除，并复制到 lib 文件夹中
 EXTENSIONS = [
@@ -35,7 +42,7 @@ def main():
     
     # 输出目录：dist/lib
     base_dir = Path(__file__).resolve().parent.parent
-    dist_lib = base_dir / "dist" / "MCA_Brain_System_v1.0" / "lib"
+    dist_lib = base_dir / "dist" / f"MCA_Brain_System_v{__version__}" / "lib"
     
     if dist_lib.exists():
         print(f"[Info] Removing old directory: {dist_lib}")

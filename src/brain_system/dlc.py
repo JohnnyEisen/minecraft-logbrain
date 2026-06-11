@@ -2,7 +2,7 @@
 
 定义 DLC 插件的基类和接口约定。
 
-v1.5.5: 增加可选 DI 注入支持 (config / audit / event_bus)，
+v2.0.0: 增加可选 DI 注入支持 (config / audit / event_bus)，
        版本号统一引用 brain_system.__version__。
 """
 from __future__ import annotations
@@ -165,9 +165,15 @@ class BrainDLC:
             self.initialize()
 
     def disable(self) -> None:
-        """禁用 DLC，关闭资源并标记为 DISABLED。"""
+        """禁用 DLC，释放资源并标记为 DISABLED。
+
+        调用 _pre_shutdown() 和 _post_shutdown() 释放 GPU/内存资源。
+        与 shutdown() 的区别：状态为 DISABLED 而非 UNLOADED，可被重新 enable。
+        """
         if self._state in (DLCState.ACTIVE, DLCState.SUSPENDED, DLCState.INITIALIZED):
-            self._suspend_internal()
+            self._pre_shutdown()
+            self._post_shutdown()
+            self._initialized = False
             self._state = DLCState.DISABLED
 
     def suspend(self) -> None:

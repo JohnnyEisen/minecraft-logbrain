@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from .dlc import BrainDLC
     from .core import BrainCore
 
-__version__ = "1.5.5"
+__version__ = "2.1.0"
 
 __all__ = [
     "BrainDLCType",
@@ -24,7 +24,7 @@ __all__ = [
     "DLCManifest",
     "BrainDLC",
     "BrainCore",
-    "discover_dlc_classes_from_package",
+
 ]
 
 __lazy_imports: dict[str, Any] = {}

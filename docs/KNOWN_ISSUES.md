@@ -75,4 +75,4 @@
 
 ## 反馈
 
-遇到未列出的问题？欢迎提交 [GitHub Issues](https://github.com/JohnnyEisen/MCA-Brain-System/issues)，请附上完整崩溃日志。
+遇到未列出的问题？欢迎提交 [GitHub Issues](https://github.com/JohnnyEisen/minecraft-logbrain/issues)，请附上完整崩溃日志。

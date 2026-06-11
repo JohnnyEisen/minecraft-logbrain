@@ -61,8 +61,8 @@ def _safe_error_message(message: str) -> str:
     import re
     msg = str(message)
     # 移除项目绝对路径
-    msg = re.sub(r'[A-Za-z]:\\[^\s]*?MCA-Brain-System[^\s,;:]*', '[project_path]', msg)
-    msg = re.sub(r'/[^\s]*?MCA-Brain-System[^\s,;:]*', '[project_path]', msg)
+    msg = re.sub(r'[A-Za-z]:\\(?:Users\\[^\\]+\\[^\\]+\\|)[^\\\s]*?minecraft-logbrain[^\s,;:]*', '[project_path]', msg)
+    msg = re.sub(r'/(?:home/[^/]+/|)[^\s]*?minecraft-logbrain[^\s,;:]*', '[project_path]', msg)
     # 移除 Windows 用户路径
     msg = re.sub(r'[A-Za-z]:\\Users\\[^\\\s]+', '[user_path]', msg)
     return msg

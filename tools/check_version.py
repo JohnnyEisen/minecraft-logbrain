@@ -3,7 +3,7 @@
 
 用法:
     python tools/check_version.py              # 检查一致性
-    python tools/check_version.py --set 1.5.5  # 统一设为指定版本
+    python tools/check_version.py --set 2.1.0  # 统一设为指定版本
 
 架构:
     版本号的唯一真源: src/brain_system/__init__.py → __version__
@@ -150,7 +150,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="版本号一致性校验")
     parser.add_argument(
         "--set", metavar="VERSION",
-        help="将版本号统一设为指定值 (如 1.5.5)",
+        help="将版本号统一设为指定值 (如 2.1.0)",
     )
     args = parser.parse_args()
 
