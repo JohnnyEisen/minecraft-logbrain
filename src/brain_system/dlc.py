@@ -29,11 +29,12 @@ class BrainDLC:
     - 子类可通过 inject() 注入 config / audit / event_bus
     - 也可在 _initialize() 中通过 self._config / self._audit / self._event_bus 访问
 
-    生命周期状态机:
+    生命周期状态机::
+
         UNLOADED -> LOADED -> INITIALIZED -> ACTIVE
-                                             |-> SUSPENDED -> ACTIVE
-                        DISABLED <- ACTIVE/SUSPENDED/INITIALIZED
-                        FAILED (任何状态转入)
+                                                 \-> SUSPENDED -> ACTIVE
+                          DISABLED <- ACTIVE/SUSPENDED/INITIALIZED
+                          FAILED (任何状态转入)
 
     Attributes:
         brain: 关联的 BrainCore 实例。
