@@ -132,7 +132,7 @@ class PatchDownloader:
 
         os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
 
-        req = urllib.request.Request(url, headers={"User-Agent": "MCA-Brain-PatchManager/2.0"})
+        req = urllib.request.Request(url, headers={"User-Agent": "minecraft-logbrain/2.1"})
 
         try:
             response = urllib.request.urlopen(req, timeout=self._timeout)

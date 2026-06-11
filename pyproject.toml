@@ -46,8 +46,8 @@ ha = [
 ]
 
 [project.scripts]
-mca = "main:main"
-brain = "brain_system.cli:main"
+logbrain = "main:main"
+logbrain-cli = "brain_system.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

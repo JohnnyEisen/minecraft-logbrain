@@ -34,7 +34,7 @@ setup(
     install_requires=requirements,
     entry_points={
         "console_scripts": [
-            "mca-gui=main:main",
+            "logbrain=main:main",
         ],
     },
     classifiers=[

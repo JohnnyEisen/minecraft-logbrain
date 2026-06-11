@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════════
-   MCA 补丁管理系统 — 主应用 (路由 + 导航)
+   LogBrain 补丁管理系统 — 主应用 (路由 + 导航)
    ═══════════════════════════════════════════════ */
 'use strict';
 
@@ -26,7 +26,7 @@ const App = {
     appEl.className = 'no-auth';
     appEl.innerHTML = `
       <div class="login-card">
-        <h1>MCA 补丁管理</h1>
+        <h1>LogBrain 补丁管理</h1>
         <p class="subtitle">请输入 API Token 以继续</p>
         <form id="login-form" onsubmit="return false;">
           <input type="password" id="login-token" placeholder="Bearer Token" autofocus>
@@ -52,7 +52,7 @@ const App = {
     appEl.innerHTML = `
       <nav class="sidebar">
         <div class="sidebar-brand">
-          <h1>MCA Patch Manager</h1>
+          <h1>LogBrain Patch Manager</h1>
           <span>补丁管理系统</span>
         </div>
         <div class="sidebar-nav">
@@ -82,7 +82,7 @@ const App = {
           </a>
         </div>
         <div class="sidebar-footer">
-          v2.1.0 | MCA Brain System
+          v2.1.0 | LogBrain Brain System
         </div>
       </nav>
       <main class="main">

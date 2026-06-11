@@ -51,7 +51,7 @@ class BrainCore:
     CORE_ALIASES: frozenset[str] = frozenset({"Brain Core", "BrainCore", "core"})
 
     def __init__(self, config_path: Optional[str] = None):
-        self.name = "MCA Core Scheduler"
+        self.name = "LogBrain Core Scheduler"
         self.version = __version__
 
         self._config_path = config_path
