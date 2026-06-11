@@ -3,7 +3,7 @@ requires = ["setuptools>=69", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "mca-brain-system"
+name = "minecraft-logbrain"
 dynamic = ["version"]
 description = "Minecraft Crash Analyzer with Brain AI System"
 readme = "README.md"
@@ -16,8 +16,8 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/JohnnyEisen/MCA-Brain-System"
-Repository = "https://github.com/JohnnyEisen/MCA-Brain-System.git"
+Homepage = "https://github.com/JohnnyEisen/minecraft-logbrain"
+Repository = "https://github.com/JohnnyEisen/minecraft-logbrain.git"
 Issues = "https://github.com/JohnnyEisen/MCA-Brain-System/issues"
 
 [project.optional-dependencies]

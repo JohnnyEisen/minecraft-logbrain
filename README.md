@@ -1,4 +1,4 @@
-# Minecraft Crash Analyzer (MCA)
+# Minecraft LogBrain — 崩溃日志智能诊断
 
 面向复杂 Mod 环境的 Minecraft 崩溃诊断平台 —— 高并发解析 + AI 语义分析 + 可扩展检测器。
 
