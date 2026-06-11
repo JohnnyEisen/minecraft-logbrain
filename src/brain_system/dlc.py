@@ -51,6 +51,7 @@ class BrainDLC:
         self.brain = brain
         self.manifest = self.get_manifest()
         self._initialized: bool = False
+        self._injected: bool = False
         self._state: DLCState = DLCState.UNLOADED
         self._config: Optional[Any] = None
         self._audit: Optional[Any] = None
@@ -73,19 +74,26 @@ class BrainDLC:
         audit: Optional[Any] = None,
         event_bus: Optional[Any] = None,
     ) -> None:
-        """注入基础设施依赖。
+        """注入基础设施依赖。仅允许在初始化前调用一次。
+
+        安全: 防止恶意 DLC 在 _initialize() 后通过 inject() 覆盖安全配置。
 
         Args:
             config: ConfigManager 实例
             audit: AuditTrail 实例
             event_bus: EventBus 实例
         """
+        if self._injected:
+            raise RuntimeError(
+                f"DLC '{self.manifest.name}' 已注入依赖，不可重复调用 inject()"
+            )
         if config is not None:
             self._config = config
         if audit is not None:
             self._audit = audit
         if event_bus is not None:
             self._event_bus = event_bus
+        self._injected = True
 
     def get_manifest(self) -> DLCManifest:
         """获取 DLC 清单。

@@ -76,8 +76,12 @@ class BrainCore:
         self.name = "LogBrain Core Scheduler"
         self.version = __version__
 
+        from types import MappingProxyType
+
         self._config_path = config_path
-        self.config = self._load_config(config_path)
+        self._config_raw = self._load_config(config_path)
+        # 对外暴露为只读 MappingProxyType，防止 DLC/补丁运行时修改安全配置
+        self.config = MappingProxyType(self._config_raw)
         self._setup_logging()
 
         self.obs = build_observability(self.config)
@@ -371,7 +375,8 @@ class BrainCore:
 
         self.retry_policy = new_policy
         self._previous_valid_config = old_config
-        self.config = candidate_config
+        self._config_raw = candidate_config
+        self.config = MappingProxyType(self._config_raw)
 
         self._load_public_keys()
         self._last_valid_config = copy.deepcopy(self.config)
