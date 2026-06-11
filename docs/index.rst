@@ -39,6 +39,8 @@ Minecraft LogBrain
      - 核心 API 参考（诊断引擎 / 检测器 / BrainCore / DLC / 补丁管理 / REST API）
    * - :doc:`ops`
      - 运维手册（启动方式、健康检查、安全配置）
+   * - :doc:`security-report`
+     - 安全报告（漏洞目录 + 修复策略 + 攻击链验证）
 
 核心包：
 
@@ -61,3 +63,4 @@ Minecraft LogBrain
 
    api
    ops
+   security-report
