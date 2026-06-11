@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from .dlc import BrainDLC
     from .core import BrainCore
 
-__version__ = "2.1.0"
+__version__ = "2.1.1"
 
 __all__ = [
     "BrainDLCType",
