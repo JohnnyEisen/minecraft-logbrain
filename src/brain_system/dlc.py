@@ -67,6 +67,46 @@ class BrainDLC:
         """DLC 是否处于可用状态（非 DISABLED/FAILED/UNLOADED）。"""
         return self._state not in (DLCState.DISABLED, DLCState.FAILED, DLCState.UNLOADED)
 
+    def _reverify_source(self) -> bool:
+        """THREAT-006: enable() 前重新验证源文件未被篡改。
+
+        执行: 签名验证 → AST 安全分析。
+        如果 DLC 无源文件路径（如内置模块），返回 True。
+        """
+        import inspect
+        import logging
+        logger = logging.getLogger(__name__)
+
+        try:
+            src_file = inspect.getfile(self.__class__)
+        except (TypeError, OSError):
+            return True  # 无法确定源文件，允许通过
+
+        from pathlib import Path
+        src_path = Path(src_file)
+        if not src_path.exists() or src_path.suffix != ".py":
+            return True  # 非 .py 文件，允许通过
+
+        # 重新验证签名
+        if hasattr(self.brain, "_verify_dlc_file_signature"):
+            if not self.brain._verify_dlc_file_signature(src_path):
+                logger.error("DLC 签名验证失败: %s", src_path)
+                return False
+
+        # 重新 AST 分析
+        try:
+            from brain_system.discovery import _validate_dlc_source
+            source = src_path.read_text(encoding="utf-8")
+            ok, err = _validate_dlc_source(source, src_path)
+            if not ok:
+                logger.error("DLC AST 验证失败: %s — %s", src_path, err)
+                return False
+        except Exception as e:
+            logger.error("DLC 重新验证异常: %s — %s", src_path, e)
+            return False
+
+        return True
+
     def inject(
         self,
         *,
@@ -167,8 +207,19 @@ class BrainDLC:
         return
 
     def enable(self) -> None:
-        """启用 DLC，从 DISABLED 或 FAILED 恢复到 ACTIVE 并重新初始化。"""
+        """启用 DLC，从 DISABLED 或 FAILED 恢复到 ACTIVE 并重新初始化。
+
+        安全: 重新初始化前重新验证 DLC 文件签名和 AST。防 disable→替换文件→enable 绕过。
+        """
         if self._state in (DLCState.DISABLED, DLCState.FAILED):
+            # THREAT-006: 重新执行签名+AST验证，防止磁盘文件被替换后绕过
+            if not self._reverify_source():
+                self._state = DLCState.FAILED
+                import logging
+                logging.getLogger(__name__).error(
+                    "DLC %s 重新验证失败，拒绝启用", self.manifest.name
+                )
+                return
             self._initialized = False
             self._state = DLCState.UNLOADED
             self.initialize()

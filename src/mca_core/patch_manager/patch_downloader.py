@@ -132,10 +132,26 @@ class PatchDownloader:
 
         os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
 
+        # ── 禁止 HTTP 重定向跟随，防 DNS 重绑定 / 302 到内网 ──
+        class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, headers, newurl):
+                raise urllib.error.HTTPError(
+                    req.get_full_url(), code, f"重定向被拒绝: {msg} → {newurl}",
+                    headers, None
+                )
+            def http_error_301(self, req, fp, code, msg, headers):  # noqa: N802
+                return self.redirect_request(req, fp, code, msg, headers, headers.get("Location", ""))
+            http_error_302 = http_error_301  # noqa: N815
+            http_error_303 = http_error_301
+            http_error_307 = http_error_301
+            http_error_308 = http_error_301
+
+        opener = urllib.request.build_opener(NoRedirectHandler)
+
         req = urllib.request.Request(url, headers={"User-Agent": "minecraft-logbrain/2.1"})
 
         try:
-            response = urllib.request.urlopen(req, timeout=self._timeout)
+            response = opener.open(req, timeout=self._timeout)
         except urllib.error.HTTPError as e:
             return False, f"HTTP {e.code}: {e.reason}"
         except urllib.error.URLError as e:
