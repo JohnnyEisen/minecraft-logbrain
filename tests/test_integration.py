@@ -255,7 +255,7 @@ class TestIntegrationBus(unittest.TestCase):
         bus = IntegrationBus()
         bus.register(MockSubsystem("sub_a", state=SubsystemLifecycle.RUNNING))
         bus.register(MockSubsystem("sub_b", health=False, state=SubsystemLifecycle.RUNNING))
-        subsystems = bus.list_subsystems()
+        subsystems = bus.list_subsystems(verbose=True)
         self.assertEqual(len(subsystems), 2)
         names = [s["name"] for s in subsystems]
         self.assertIn("sub_a", names)
