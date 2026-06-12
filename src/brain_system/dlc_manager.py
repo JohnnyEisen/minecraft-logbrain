@@ -256,10 +256,15 @@ class DLCManager:
 
             for name, (old_dlc, old_manifest, old_deps) in backup.items():
                 try:
+                    # VULN-007 fix: shutdown 后需重新初始化
+                    if old_dlc.state in (DLCState.UNLOADED, DLCState.DISABLED):
+                        old_dlc._initialized = False
+                        old_dlc._state = DLCState.UNLOADED
+                        old_dlc.initialize()
                     self.dlcs[name] = old_dlc
                     self.dlc_manifests[name] = old_manifest
                     self.dlc_dependencies[name] = old_deps
-                    logging.info("已回滚DLC: %s", name)
+                    logging.info("已回滚DLC: %s (state=%s)", name, old_dlc.state.value)
                 except Exception as e:
                     logging.error("回滚DLC失败 %s: %s", name, e)
 

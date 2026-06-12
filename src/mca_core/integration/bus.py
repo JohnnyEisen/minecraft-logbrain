@@ -153,11 +153,13 @@ class IntegrationBus:
 
         if name in self._subsystems:
             existing = self._subsystems[name].subsystem
-            logger.warning(
-                "子系统 '%s' 已注册（类型: %s），将被替换为 %s",
-                name,
-                type(existing).__name__,
-                type(subsystem).__name__,
+            logger.error(
+                "子系统 '%s' 已注册（类型: %s），拒绝重复注册。"
+                "请先调用 unregister() 或使用 force=True",
+                name, type(existing).__name__,
+            )
+            raise ValueError(
+                f"子系统 '{name}' 已注册。使用 force=True 强制替换。"
             )
 
         entry = RoutingEntry(subsystem=subsystem)
@@ -195,8 +197,8 @@ class IntegrationBus:
         entry = self._subsystems.get(name)
         return entry.subsystem if entry else None
 
-    def list_subsystems(self) -> List[Dict[str, Any]]:
-        """列出所有已注册的子系统及其状态。"""
+    def list_subsystems(self, verbose: bool = False) -> List[Dict[str, Any]]:
+        """列出子系统状态。verbose=False 时隐藏内部名称/版本。"""
         result: List[Dict[str, Any]] = []
         for name, entry in self._subsystems.items():
             sub = entry.subsystem
@@ -207,14 +209,18 @@ class IntegrationBus:
                 state = "unknown"
                 healthy = False
 
-            result.append({
-                "name": name,
-                "version": sub.version,
-                "state": state,
+            item: dict = {
                 "healthy": healthy,
-                "operations": entry.operations,
-                "registered_at": entry.registered_at.isoformat(),
-            })
+                "state": state,
+            }
+            if verbose:
+                item.update({
+                    "name": name,
+                    "version": sub.version,
+                    "operations": entry.operations,
+                    "registered_at": entry.registered_at.isoformat(),
+                })
+            result.append(item)
         return result
 
     def request(
