@@ -310,8 +310,12 @@ async def upload_patch(
 ):
     """上传新补丁文件。"""
     allowed_ext = ".py"
-    if not file.filename.endswith(allowed_ext):
+    if not file.filename or not file.filename.lower().endswith(allowed_ext):
         return _error(f"仅支持 {allowed_ext} 文件", 400)
+    # 防路径遍历: 从文件名中剥离目录路径，仅保留 basename
+    safe_name = os.path.basename(file.filename)
+    if safe_name != file.filename or ".." in file.filename or "/" in file.filename or "\\" in file.filename:
+        return _error("文件名包含非法字符", 400)
 
     content = await file.read()
     if len(content) > 500_000:
@@ -319,9 +323,7 @@ async def upload_patch(
 
     pm = get_pm()
 
-    if file.filename is None:
-        return _error("上传文件缺少文件名", 400)
-    tmp_path = os.path.join(tempfile.gettempdir(), file.filename)
+    tmp_path = os.path.join(tempfile.gettempdir(), safe_name)
     with open(tmp_path, "wb") as f:
         f.write(content)
 
