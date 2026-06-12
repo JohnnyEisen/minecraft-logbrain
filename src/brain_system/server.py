@@ -64,25 +64,34 @@ def create_app(brain: Any):
         response.headers["X-XSS-Protection"] = "1; mode=block"
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["Server"] = ""
-        # VULN-006: CSRF 保护 - 状态变更方法需要 Origin 验证
+        # CSRF 保护 - 状态变更方法验证 Origin
         if request.method in ("POST", "PUT", "PATCH", "DELETE"):
             origin = request.headers.get("Origin", "")
             host = request.headers.get("Host", "")
-            if origin and host and not origin.endswith(host):
-                # 跨站请求，需验证 CSRF token
-                csrf_header = request.headers.get("X-CSRF-Token", "")
-                csrf_cookie = request.cookies.get("csrf_token", "")
-                if not csrf_header or csrf_header != csrf_cookie:
-                    from fastapi.responses import JSONResponse
-                    return JSONResponse(
-                        status_code=403,
-                        content={"error": "CSRF validation failed"},
-                    )
+            # 无 Origin 的状态变更请求直接拒绝 (V-005 fix)
+            if not origin and host:
+                from fastapi.responses import JSONResponse
+                return JSONResponse(
+                    status_code=403,
+                    content={"error": "Missing Origin header"},
+                )
+            if not origin.endswith(host):
+                from fastapi.responses import JSONResponse
+                return JSONResponse(
+                    status_code=403,
+                    content={"error": "CSRF validation failed"},
+                )
         return response
 
     @app.get("/health")
-    def health(_=Depends(verify_auth)):
-        return {"status": "ok"}
+    def health(request: Request, _=Depends(verify_auth)):
+        response = JSONResponse({"status": "ok"})
+        # 设置 CSRF cookie (V-006 fix)
+        import secrets as _secrets
+        csrf_token = _secrets.token_hex(32)
+        response.set_cookie("csrf_token", csrf_token, samesite="strict", httponly=True)
+        response.headers["X-CSRF-Token"] = csrf_token
+        return response
 
     @app.get("/ready")
     def ready(_=Depends(verify_auth)):
