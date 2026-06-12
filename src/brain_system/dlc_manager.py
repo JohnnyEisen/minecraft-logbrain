@@ -313,6 +313,7 @@ class DLCManager:
         core_aliases = core.CORE_ALIASES | {core.name}
 
         for cls in pending_cls:
+            temp_inst = None
             try:
                 temp_inst = cls(core)
                 manifest = temp_inst.get_manifest()
@@ -333,6 +334,12 @@ class DLCManager:
                     getattr(cls, "__name__", str(cls)),
                     e,
                 )
+            finally:
+                if temp_inst is not None:
+                    try:
+                        temp_inst._pre_shutdown()
+                    except Exception:
+                        pass
 
         # 第三阶段：拓扑排序
         sorted_names = core._topological_sort(graph, priority_map)

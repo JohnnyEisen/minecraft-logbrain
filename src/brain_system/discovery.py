@@ -174,15 +174,7 @@ def load_dlc_classes_from_file(file_path: Path) -> List[Type[BrainDLC]]:
 
     module = importlib.util.module_from_spec(spec)
     sys.modules[module.__name__] = module
-    # 加载前清除 __pycache__ 中的缓存字节码，防止 .pyc 投毒绕过 AST
-    _pycache = file_path.parent / "__pycache__"
-    if _pycache.exists():
-        import shutil
-        try:
-            shutil.rmtree(_pycache)
-        except Exception:
-            pass
-
+    # exec_module 总是从源码读取，不会读取 __pycache__。不需要清除缓存目录。
     try:
         spec.loader.exec_module(module)
         return _extract_dlc_classes(module)
