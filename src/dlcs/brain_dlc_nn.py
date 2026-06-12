@@ -17,6 +17,56 @@ from brain_system.utils import optional_import
 # ---- 辅助：获取数组模块（带缓存）-----------------------------
 
 _array_module_cache: Dict[str, Any] = {}
+# GPU 设备上下文
+_device: str = "cpu"
+_gpu_pool: dict = {}
+
+
+def set_device(device: str) -> None:
+    """设置计算设备 ('cpu' 或 'cuda')
+
+    :param device: 设备标识符
+    """
+    global _device
+    _device = device
+
+
+def get_device() -> str:
+    """获取当前计算设备"""
+    return _device
+
+
+def pre_allocate_gpu_pool(size_mb: int = 256) -> int:
+    """预分配 GPU 显存池，减少首次运算延迟
+
+    :param size_mb: 预分配大小（MB）
+    :returns: 成功分配的块数
+    """
+    global _gpu_pool
+    try:
+        cp = optional_import("cupy")
+        if cp is None or not hasattr(cp.cuda, 'is_available'):
+            return 0
+        if not cp.cuda.is_available():
+            return 0
+        count = 0
+        chunk_size = 64 * 1024 * 1024
+        chunks = max(1, (size_mb * 1024 * 1024) // chunk_size)
+        for i in range(chunks):
+            try:
+                _gpu_pool[f"pool_{i}"] = cp.cuda.alloc(chunk_size)
+                count += 1
+            except Exception:
+                break
+        return count
+    except Exception:
+        return 0
+
+
+def clear_gpu_pool() -> None:
+    """释放 GPU 显存池"""
+    global _gpu_pool
+    _gpu_pool.clear()
 
 
 def _get_array_module(x: Any) -> Any:
@@ -29,6 +79,18 @@ def _get_array_module(x: Any) -> Any:
         pass
     np = optional_import("numpy")
     return _array_module_cache.setdefault("numpy", np)
+
+
+def _get_xp() -> Any:
+    """根据当前设备返回 numpy 或 cupy"""
+    if _device == "cuda":
+        cp = optional_import("cupy")
+        if cp is not None:
+            _array_module_cache.setdefault("cupy", cp)
+            return cp
+    np_mod = optional_import("numpy")
+    _array_module_cache.setdefault("numpy", np_mod)
+    return np_mod
 
 
 def _array_module_cache_clear() -> None:
@@ -88,8 +150,34 @@ class TensorNode:
             other = TensorNode(other)
         return MatMul()(self, other)
 
+    def to_gpu(self):
+        """将数据移到 GPU（CuPy）"""
+        cp = optional_import("cupy")
+        if cp and not isinstance(self.data, cp.ndarray):
+            self.data = cp.asarray(self.data)
+            if self.grad is not None:
+                self.grad = cp.asarray(self.grad)
+
+    def to_cpu(self):
+        """将数据移到 CPU（numpy）"""
+        if hasattr(self.data, 'get'):
+            self.data = self.data.get()
+            if self.grad is not None and hasattr(self.grad, 'get'):
+                self.grad = self.grad.get()
+
+    @property
+    def device(self) -> str:
+        """返回当前数据所在设备"""
+        try:
+            cp = optional_import("cupy")
+            if cp and isinstance(self.data, cp.ndarray):
+                return f"cuda:{self.data.device.id}"
+        except Exception:
+            pass
+        return "cpu"
+
     def __repr__(self):
-        return f"Tensor(shape={self.data.shape if hasattr(self.data, 'shape') else 'scalar'}, requires_grad={self.requires_grad})"
+        return f"Tensor(shape={self.data.shape if hasattr(self.data, 'shape') else 'scalar'}, device={self.device}, requires_grad={self.requires_grad})"
 
 
 class Function:
@@ -403,12 +491,13 @@ class SGD:
     def _step_tensor(self, p):
         if p.grad is None:
             return
+        xp = _get_array_module(p.data)
         update = p.grad * self.lr
         if self.momentum > 0:
-            v = self._velocities[id(p)]
+            v = self._velocities.get(id(p))
             if v is not None:
                 update = update + self.momentum * v
-            self._velocities[id(p)] = update.copy() if hasattr(update, 'copy') else update
+            self._velocities[id(p)] = xp.array(update, copy=True)
         p.data = p.data - update
 
     def _step_raw(self, arr):
@@ -460,10 +549,10 @@ class Linear(Function):
 
     def __init__(self, in_features: int, out_features: int, bias: bool = True):
         super().__init__()
-        np_mod = optional_import("numpy")
-        scale = (2.0 / in_features) ** 0.5
-        self.W = np_mod.random.randn(in_features, out_features).astype(np_mod.float32) * scale
-        self.b = np_mod.zeros(out_features, dtype=np_mod.float32) if bias else None
+        xp = _get_xp()
+        scale = (2.0 / max(in_features, 1)) ** 0.5
+        self.W = xp.random.randn(in_features, out_features).astype(xp.float32) * scale
+        self.b = xp.zeros(out_features, dtype=xp.float32) if bias else None
 
     def forward(self, x):
         self.x = x
@@ -505,7 +594,25 @@ class NeuralNetworkOperatorsDLC(BrainDLC):
             self.hw_dlc = self.brain.dlcs.get("Hardware Accelerator")
         except Exception:
             pass
-        logging.info("NeuralNetworkOperatorsDLC 已就绪")
+        # GPU 初始化
+        if self.hw_dlc is not None:
+            device_str = getattr(self.hw_dlc, "get_device_str", lambda: "cpu")()
+            if device_str == "cuda":
+                try:
+                    cp = optional_import("cupy")
+                    if cp is not None:
+                        set_device("cuda")
+                        pool_blocks = pre_allocate_gpu_pool(256)
+                        logging.info("NeuralNetworkOperatorsDLC: GPU 模式 (CuPy), 显存池 %d 块", pool_blocks)
+                    else:
+                        logging.info("NeuralNetworkOperatorsDLC: CPU 模式 (CuPy 未安装)")
+                except Exception as e:
+                    logging.warning("GPU 初始化失败: %s, 回退 CPU", e)
+        logging.info("NeuralNetworkOperatorsDLC 已就绪 (device=%s)", get_device())
+
+    def _pre_shutdown(self):
+        clear_gpu_pool()
+        _array_module_cache_clear()
 
     def provide_computational_units(self) -> Dict[str, Any]:
         return {
@@ -514,6 +621,10 @@ class NeuralNetworkOperatorsDLC(BrainDLC):
             "Sequential": Sequential,
             "Linear": Linear,
             "SGD": SGD,
+            "set_device": set_device,
+            "get_device": get_device,
+            "pre_allocate_gpu_pool": pre_allocate_gpu_pool,
+            "clear_gpu_pool": clear_gpu_pool,
             "ops": {
                 "add": Add(), "sub": Sub(), "mul": Mul(), "matmul": MatMul(),
                 "relu": Relu(), "sigmoid": Sigmoid(), "tanh": Tanh(),
