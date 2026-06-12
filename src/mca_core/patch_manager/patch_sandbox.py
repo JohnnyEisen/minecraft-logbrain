@@ -51,7 +51,7 @@ _STANDARD_BUILTINS = _RESTRICTED_BUILTINS | frozenset({
 })
 
 _ADMIN_DENIED = frozenset({
-    "exec", "eval", "compile", "__import__",
+    "exec", "eval", "compile", "__import__", "breakpoint",
 })
 
 
