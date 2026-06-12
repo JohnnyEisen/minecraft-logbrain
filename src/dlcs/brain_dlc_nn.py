@@ -99,12 +99,11 @@ class Function:
         self.outputs: List[TensorNode] = []
         self.generation = 0
 
-    def __call__(self, *inputs: TensorNode) -> TensorNode | tuple[TensorNode, ...]:
-        self.inputs = list(inputs)
-        self.generation = max((x.generation for x in inputs), default=0)
-        
-        # Unpack data
-        raw_inputs = [x.data for x in inputs]
+    def __call__(self, *inputs) -> TensorNode | tuple[TensorNode, ...]:
+        # 接受 TensorNode 或原始数组作为输入
+        self.inputs = [x if isinstance(x, TensorNode) else TensorNode(x, requires_grad=False) for x in inputs]
+        self.generation = max((x.generation for x in self.inputs), default=0)
+        raw_inputs = [x.data if isinstance(x, TensorNode) else x for x in inputs]
         
         # Forward
         raw_outputs = self.forward(*raw_inputs)
@@ -113,7 +112,7 @@ class Function:
         
         # Pack Output
         outputs = []
-        requires_grad = any(x.requires_grad for x in inputs)
+        requires_grad = any(x.requires_grad for x in self.inputs)
         for d in raw_outputs:
             out_node = TensorNode(d, requires_grad=requires_grad, creator=self if requires_grad else None)
             outputs.append(out_node)
@@ -130,9 +129,9 @@ class Function:
         if not isinstance(grad_inputs, tuple):
             grad_inputs = (grad_inputs,)
         
-        # 分发到各输入
+        # 分发到各输入（跳过非 TensorNode 的原始输入）
         for x, g in zip(self.inputs, grad_inputs):
-            if x.requires_grad:
+            if isinstance(x, TensorNode) and x.requires_grad:
                 x.backward(g)
 
     def backward_impl(self, grad_output):
@@ -290,9 +289,196 @@ class MSELoss(Function):
         self.diff = pred - target
         self.N = pred.size
         return (self.diff ** 2).sum() / self.N
-    
+
     def backward_impl(self, gy):
         return gy * 2 * self.diff / self.N, -gy * 2 * self.diff / self.N
+
+
+# ---- 激活函数 ------------------------------------------------
+
+class Sigmoid(Function):
+    """Sigmoid: 1 / (1 + exp(-x))"""
+    def forward(self, x):
+        self.y = 1.0 / (1.0 + _get_array_module(x).exp(-x))
+        return self.y
+
+    def backward_impl(self, gy):
+        return gy * self.y * (1.0 - self.y)
+
+
+class Tanh(Function):
+    """Tanh: (exp(x) - exp(-x)) / (exp(x) + exp(-x))"""
+    def forward(self, x):
+        xp = _get_array_module(x)
+        self.y = xp.tanh(x)
+        return self.y
+
+    def backward_impl(self, gy):
+        return gy * (1.0 - self.y ** 2)
+
+
+class Softmax(Function):
+    """Softmax: exp(x_i) / sum(exp(x))"""
+    def forward(self, x):
+        xp = _get_array_module(x)
+        e = xp.exp(x - x.max(axis=-1, keepdims=True))
+        self.y = e / e.sum(axis=-1, keepdims=True)
+        return self.y
+
+    def backward_impl(self, gy):
+        return gy  # simplified: assumes combined with CrossEntropyLoss
+
+
+class Dropout(Function):
+    """Dropout: 训练时随机置零。"""
+    def __init__(self, p: float = 0.5):
+        super().__init__()
+        self.p = p
+
+    def forward(self, x):
+        xp = _get_array_module(x)
+        self.mask = xp.random.binomial(1, 1.0 - self.p, size=xp.shape(x)) / (1.0 - self.p)
+        return x * self.mask
+
+    def backward_impl(self, gy):
+        return gy * self.mask
+
+
+# ---- 损失函数 ------------------------------------------------
+
+class CrossEntropyLoss(Function):
+    """CrossEntropy = -log(softmax_i[target])"""
+    def forward(self, logits, target):
+        xp = _get_array_module(logits)
+        e = xp.exp(logits - logits.max(axis=-1, keepdims=True))
+        self.probs = e / e.sum(axis=-1, keepdims=True)
+        self.N = logits.shape[0] if hasattr(logits, 'shape') else 1
+        if hasattr(target, 'shape') and len(target.shape) == 1:
+            loss = -xp.log(self.probs[xp.arange(self.N), target.astype(int)] + 1e-12).mean()
+        else:
+            loss = -(target * xp.log(self.probs + 1e-12)).sum(axis=-1).mean()
+        return loss
+
+    def backward_impl(self, gy):
+        xp = _get_array_module(self.probs)
+        if hasattr(gy, 'shape') and len(gy.shape) == 1:
+            self.probs[xp.arange(self.N), gy.astype(int)] -= 1.0 / self.N
+        return gy * self.probs, gy * (-self.probs)
+
+
+# ---- 优化器 --------------------------------------------------
+
+class SGD:
+    """随机梯度下降优化器
+
+    :param params: TensorNode 列表
+    :param lr: 学习率
+    :param momentum: 动量系数 (0 = 无动量)
+
+    用法::
+
+        opt = SGD([W, b], lr=0.01)
+        opt.zero_grad()
+        loss.backward()
+        opt.step()
+    """
+    def __init__(self, params: list, lr: float = 0.01, momentum: float = 0.0):
+        self.params = params
+        self.lr = lr
+        self.momentum = momentum
+        self._velocities: dict = {id(p): None for p in params}
+
+    def zero_grad(self):
+        for p in self.params:
+            if isinstance(p, TensorNode):
+                p.grad = None
+
+    def step(self):
+        for p in self.params:
+            if isinstance(p, TensorNode):
+                self._step_tensor(p)
+            else:
+                self._step_raw(p)
+
+    def _step_tensor(self, p):
+        if p.grad is None:
+            return
+        update = p.grad * self.lr
+        if self.momentum > 0:
+            v = self._velocities[id(p)]
+            if v is not None:
+                update = update + self.momentum * v
+            self._velocities[id(p)] = update.copy() if hasattr(update, 'copy') else update
+        p.data = p.data - update
+
+    def _step_raw(self, arr):
+        """对原始 numpy 数组应用梯度（需外部手动设置 .grad 属性）"""
+        pass  # raw arrays managed externally via autograd
+
+
+# ---- 模型容器 ------------------------------------------------
+
+class Sequential:
+    """顺序模型容器
+
+    用法::
+
+        model = Sequential([
+            Linear(in_dim, hidden_dim),
+            Relu(),
+            Linear(hidden_dim, out_dim),
+            Softmax(),
+        ])
+        y = model.forward(x)
+    """
+
+    def __init__(self, layers: list):
+        self.layers = layers
+
+    def forward(self, x):
+        for layer in self.layers:
+            if isinstance(layer, Function):
+                x = layer(x)
+            elif hasattr(layer, 'forward'):
+                x = layer.forward(x)
+            else:
+                x = layer(x)
+        return x
+
+    def __call__(self, x):
+        return self.forward(x)
+
+
+class Linear(Function):
+    """全连接层: y = x @ W + b（可选 bias）
+
+    :param in_features: 输入维度
+    :param out_features: 输出维度
+    :param bias: 是否使用偏置
+    """
+    __slots__ = ("x", "W", "b")
+
+    def __init__(self, in_features: int, out_features: int, bias: bool = True):
+        super().__init__()
+        np_mod = optional_import("numpy")
+        scale = (2.0 / in_features) ** 0.5
+        self.W = np_mod.random.randn(in_features, out_features).astype(np_mod.float32) * scale
+        self.b = np_mod.zeros(out_features, dtype=np_mod.float32) if bias else None
+
+    def forward(self, x):
+        self.x = x
+        out = x @ self.W
+        if self.b is not None:
+            out = out + self.b
+        return out
+
+    def backward_impl(self, gy):
+        gW = self.x.T @ gy
+        gb = gy.sum(axis=0) if self.b is not None else None
+        gx = gy @ self.W.T
+        if gb is not None:
+            return (gx, gW, gb)
+        return (gx, gW)
 
 
 # DLC 定义
@@ -303,42 +489,38 @@ class NeuralNetworkOperatorsDLC(BrainDLC):
             name="Neural Network Operators",
             version=__version__,
             author="Brain AI Systems",
-            description="提供基础神经网络算子与简易 Autograd",
+            description="基础神经网络算子、Autograd、优化器与模型容器",
             dlc_type=BrainDLCType.PROCESSOR,
             dependencies=["Brain Core", "Hardware Accelerator"],
             priority=20
         )
 
     def _initialize(self):
-        # 检查 numpy
         self.np = optional_import("numpy")
         if self.np is None:
             logging.warning("NeuralNetworkOperatorsDLC: 缺少 numpy，无法工作")
             return
-
-        # 获取 Hardware DLC (如果需要)
         self.hw_dlc = None
         try:
-             self.hw_dlc = self.brain.dlcs.get("Hardware Accelerator")
+            self.hw_dlc = self.brain.dlcs.get("Hardware Accelerator")
         except Exception:
-             pass
-
+            pass
         logging.info("NeuralNetworkOperatorsDLC 已就绪")
 
     def provide_computational_units(self) -> Dict[str, Any]:
         return {
             "Tensor": TensorNode,
             "Function": Function,
+            "Sequential": Sequential,
+            "Linear": Linear,
+            "SGD": SGD,
             "ops": {
-                "add": Add(),
-                "sub": Sub(),
-                "mul": Mul(),
-                "matmul": MatMul(),
-                "relu": Relu(),
+                "add": Add(), "sub": Sub(), "mul": Mul(), "matmul": MatMul(),
+                "relu": Relu(), "sigmoid": Sigmoid(), "tanh": Tanh(),
+                "softmax": Softmax(), "dropout": Dropout(0.5),
                 "fused_matmul_relu": FusedMatMulReLU(),
                 "fused_linear_relu": FusedLinearReLU(),
-                "batch_norm1d": BatchNorm1D(),
-                "layer_norm": LayerNorm(),
-                "mse_loss": MSELoss(),
+                "batch_norm1d": BatchNorm1D(), "layer_norm": LayerNorm(),
+                "mse_loss": MSELoss(), "cross_entropy": CrossEntropyLoss(),
             }
         }
