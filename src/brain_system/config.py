@@ -69,7 +69,10 @@ class FileConfigSource(ConfigSource):
             while not self._stop.is_set():
                 try:
                     if self._path.exists():
-                        mtime = self._path.stat().st_mtime
+                        st = self._path.stat()
+                        if st.st_mode & 0o022:
+                            logging.warning("配置文件 %s 权限不安全 (mode=0%o)", self._path, st.st_mode)
+                        mtime = st.st_mtime
                         if self._last_mtime is None:
                             self._last_mtime = mtime
                         elif mtime != self._last_mtime:

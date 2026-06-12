@@ -107,6 +107,8 @@ class DIContainer:
         Returns:
             容器实例（支持链式调用）
         """
+        if service_type in self._services:
+            logging.warning("DI: 服务 '%s' 被覆盖注册", service_type.__name__)
         self._services[service_type] = ServiceDescriptor(
             service_type=service_type,
             implementation=implementation,

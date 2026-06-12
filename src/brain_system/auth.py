@@ -35,9 +35,11 @@ def _check_rate_limit(client_ip: str) -> None:
                 _rate_limit_store[client_ip] = (start_time, count + 1)
         else:
             _rate_limit_store[client_ip] = (now, 1)
-            expired = [ip for ip, (t, _) in _rate_limit_store.items() if now - t > _RATE_LIMIT_WINDOW]
-            for ip in expired:
-                del _rate_limit_store[ip]
+            # Periodic cleanup: every 100th new IP entry
+            if len(_rate_limit_store) % 100 == 0:
+                expired = [ip for ip, (t, _) in _rate_limit_store.items() if now - t > _RATE_LIMIT_WINDOW]
+                for ip in expired:
+                    del _rate_limit_store[ip]
 
 
 def verify_auth(request: Request, authorization: Optional[str] = Header(None)) -> None:

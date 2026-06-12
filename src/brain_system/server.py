@@ -52,8 +52,8 @@ def create_app(brain: Any):
     try:
         from .patch_api import router as patch_router
         app.include_router(patch_router)
-    except Exception:
-        pass  # 补丁 API 可选
+    except Exception as e:
+        import logging; logging.getLogger(__name__).error("补丁 API 加载失败: %s", e)
 
     # 安全头中间件 (VULN-006 + CSRF 保护)
     @app.middleware("http")
