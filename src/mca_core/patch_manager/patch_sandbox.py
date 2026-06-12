@@ -18,6 +18,26 @@ from enum import Enum
 from typing import Any
 
 
+# VULN-003: 僵尸线程追踪，防止资源耗尽
+import threading as _threading_module
+_zombie_threads: list[tuple[_threading_module.Thread, str, float]] = []
+_zombie_lock = _threading_module.Lock()
+
+
+def _track_zombie_thread(t: _threading_module.Thread, patch_id: str) -> None:
+    import time as _time
+    with _zombie_lock:
+        _zombie_threads.append((t, patch_id, _time.time()))
+        # 清理已完成的后台线程
+        _zombie_threads[:] = [(th, pid, ts) for th, pid, ts in _zombie_threads if th.is_alive()]
+        alive = len(_zombie_threads)
+        if alive > 10:
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "累积 %d 个超时沙箱后台线程，可能资源耗尽", alive
+            )
+
+
 class PermissionLevel(Enum):
     """补丁执行权限级别"""
     RESTRICTED = "restricted"  # 默认：纯计算，无IO/网络/子进程
@@ -357,9 +377,11 @@ def execute_patch_sandboxed(
                 _exec_error.append(_e)
             finally:
                 _exec_done.set()
-        _t = _threading.Thread(target=_exec_in_thread, daemon=True)
+        _t = _threading.Thread(target=_exec_in_thread, daemon=True, name=f"sandbox-{patch_id}")
         _t.start()
         if not _exec_done.wait(timeout=30.0):
+            # VULN-003: 记录超时后台线程，定期检查清理
+            _track_zombie_thread(_t, patch_id)
             return SandboxResult(
                 success=False,
                 error="补丁执行超时 (30s)",
