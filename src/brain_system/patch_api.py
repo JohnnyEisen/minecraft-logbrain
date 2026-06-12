@@ -340,6 +340,12 @@ async def upload_patch(
                 "description": "",
             }
 
+        # VULN-012 fix: 拒绝用户覆盖安全敏感字段
+        _sensitive_fields = {"permission_level", "risk_level", "signature", "integrity_token", "file_hash"}
+        _injected = _sensitive_fields & set(meta_dict.keys())
+        if _injected:
+            return _error(f"不允许覆盖安全字段: {', '.join(sorted(_injected))}", 400)
+
         from mca_core.patch_manager.models import PatchMeta
         meta = PatchMeta.from_dict(meta_dict)
 
