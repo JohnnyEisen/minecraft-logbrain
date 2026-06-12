@@ -4,11 +4,15 @@
 'use strict';
 
 const Utils = {
-  // HTML 实体转义
+  // HTML 文本内容转义
   escape(s) {
     const d = document.createElement('div');
     d.textContent = s;
     return d.innerHTML;
+  },
+  // 属性值转义 (含单引号, 用于 onclick/onerror 等内联属性)
+  escapeAttr(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   },
 
   // 格式化 ISO 日期

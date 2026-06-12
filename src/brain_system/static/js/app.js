@@ -116,11 +116,16 @@ const App = {
       this._navLinks[page] = a;
       a.addEventListener('click', (e) => {
         e.preventDefault();
-        if (window.innerWidth <= 768) {
-          // mobile - toggle
-        }
         this.navigate(page);
       });
+    });
+
+    // 依赖链接 — 事件委托, 避免 inline onclick XSS
+    document.querySelector('main.main').addEventListener('click', (e) => {
+      const link = e.target.closest('.dep-link');
+      if (link && link.dataset.patchId) {
+        this.navigate('detail', link.dataset.patchId);
+      }
     });
 
     // 加载仪表盘
@@ -264,7 +269,7 @@ const App = {
         html += '<div style="margin-top:20px;"><div class="detail-section"><h3>补丁列表</h3>';
         nodes.forEach(n => {
           html += `<div style="padding:8px 0;border-bottom:1px solid rgba(48,54,61,0.3);display:flex;align-items:center;gap:8px;">`;
-          html += `<span style="font-family:var(--font-mono);font-size:12px;color:var(--accent-blue);cursor:pointer;" onclick="App.navigate('detail','${Utils.escape(n)}')">${Utils.escape(n)}</span>`;
+          html += `<span class="dep-link" data-patch-id="${Utils.escapeAttr(n)}" style="font-family:var(--font-mono);font-size:12px;color:var(--accent-blue);cursor:pointer;">${Utils.escape(n)}</span>`;
           const depsFrom = edges.filter(([f, t]) => f === n).map(([f, t]) => t);
           const depsTo = edges.filter(([f, t]) => t === n).map(([f, t]) => f);
           if (depsFrom.length) html += `<span style="font-size:11px;color:var(--text-muted);">\u2192 ${depsFrom.join(', ')}</span>`;
