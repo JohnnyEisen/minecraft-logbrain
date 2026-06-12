@@ -48,11 +48,15 @@ def verify_auth(request: Request, authorization: Optional[str] = Header(None)) -
     client_ip = request.client.host if request.client else "unknown"
     _check_rate_limit(client_ip)
 
-    # VULN-007: Host header 验证 — 拒绝非预期的主机名
+    # Host header 验证
     host = request.headers.get("Host", "")
-    if host and host not in ("127.0.0.1", "localhost", f"localhost:{request.url.port}" if request.url.port else ""):
-        # 不是 localhost — 必须要求 token
-        pass  # 由下面的 token 逻辑处理
+    expected_hosts = {"127.0.0.1", "localhost", "::1"}
+    if host and ":" in host:
+        expected_hosts.add(f"localhost:{host.split(':')[1]}")
+    if expected:
+        pass  # token 已配置, 正常验证
+    elif host and host.split(":")[0] not in expected_hosts:
+        raise HTTPException(403, "API authentication not configured; localhost only")
 
     expected = os.environ.get("MCA_API_TOKEN", "")
     if not expected:

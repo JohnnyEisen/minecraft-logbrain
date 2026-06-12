@@ -32,7 +32,7 @@ class BrainDLC:
     生命周期状态机::
 
         UNLOADED -> LOADED -> INITIALIZED -> ACTIVE
-                                                 \-> SUSPENDED -> ACTIVE
+                                                 \\-> SUSPENDED -> ACTIVE
                           DISABLED <- ACTIVE/SUSPENDED/INITIALIZED
                           FAILED (任何状态转入)
 

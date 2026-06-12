@@ -107,7 +107,7 @@ class BrainCore:
         }
 
         self.monitor_task: Optional[asyncio.Task[None]] = None
-        self._last_valid_config: dict[str, Any] = copy.deepcopy(self.config)
+        self._last_valid_config: dict[str, Any] = copy.deepcopy(dict(self.config))
         self._previous_valid_config: Optional[dict[str, Any]] = None
 
         default_thread_pool_size = min(multiprocessing.cpu_count() * 2, 16)
