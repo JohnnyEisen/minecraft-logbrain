@@ -24,13 +24,11 @@ def _get_array_module(x: Any) -> Any:
     try:
         cp = optional_import("cupy")
         if cp and isinstance(x, cp.ndarray):
-            _array_module_cache.setdefault("cupy", cp)
-            return cp
+            return _array_module_cache.setdefault("cupy", cp)
     except Exception:
         pass
     np = optional_import("numpy")
-    _array_module_cache.setdefault("numpy", np)
-    return np
+    return _array_module_cache.setdefault("numpy", np)
 
 
 def _array_module_cache_clear() -> None:
@@ -59,11 +57,12 @@ class TensorNode:
             xp = _get_array_module(self.data)
             grad = xp.ones_like(self.data)
 
-        # 累积当前梯度
+        # 累积梯度（copy 防止引用共享）
         if self.grad is None:
-            self.grad = grad
+            xp = _get_array_module(grad)
+            self.grad = xp.array(grad, copy=True) if hasattr(xp, 'array') else grad
         else:
-            self.grad += grad
+            self.grad = self.grad + grad
 
         # 传递给 creator
         if self.creator:
