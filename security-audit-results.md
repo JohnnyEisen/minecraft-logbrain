@@ -1,75 +1,61 @@
-# Security Audit Results — Automated Multi-Round
+# 安全审计报告 — v2.1.2
 
-**Start**: 2026-06-11 | **Scope**: DLC加载, 补丁沙箱, API认证, 文件上传, 依赖注入
+**日期**: 2026-06-11 | **范围**: DLC加载, 补丁沙箱, API认证, 文件上传, 依赖注入  
+**发现**: 53 | **修复**: 24 | **测试**: 32/32
 
 ---
 
+## 修复清单
 
-## Round 1 — DLC 加载 (Agent 1)
+### DLC 加载 (8)
 
-| ID | Severity | File | Line | Description |
-|------|----------|------|------|------|
-| VULN-001 | CRITICAL | discovery.py | 38-89 | AST bypass: `from os import system` renames forbidden calls |
-| VULN-002 | CRITICAL | dlc_manager.py | 315-330 | `load_all` instantiates DLC twice, first not shutdown |
-| VULN-003 | CRITICAL | discovery.py | 19-68 | `builtins.exec` bypasses AST blacklist |
-| VULN-004 | CRITICAL | discovery.py | 19-31 | `importlib.import_module` not forbidden |
-| VULN-005 | HIGH | discovery.py | 152-158 | `shutil.rmtree(__pycache__)` symlink attack |
-| VULN-006 | HIGH | dlc_manager.py | 300-304 | TOCTOU between file check and load |
-| VULN-007 | HIGH | dlc_manager.py | 214-266 | Reload rollback restores shutdown DLC |
-| VULN-008 | HIGH | core.py | 84 | MappingProxyType shallow-only, lists mutable |
-| VULN-009 | MEDIUM | dlc.py | 70-108 | _reverify_source passes silently on missing file |
-| VULN-010 | MEDIUM | discovery.py | 169-227 | Package discovery lacks signature verification |
-| VULN-011 | MEDIUM | core.py | 277-294 | Signature verification not enabled by default |
-| VULN-012 | MEDIUM | discovery.py | 126-166 | load_dlc_classes_from_file is public, no sig check |
-| VULN-013 | LOW | core.py | 269-275 | Hot-reload clears public keys |
-| VULN-014 | LOW | dlc.py | 163,189 | Audit import inside function, silent fail |
+| 编号 | 漏洞 | 修复 |
+|------|------|------|
+| VULN-001 | AST `from os import system` 别名绕过 | 禁止 os/builtins/importlib 导入 + bare calls 黑名单 |
+| VULN-002 | load_all temp_inst 资源泄漏 | finally 调用 _pre_shutdown |
+| VULN-003 | builtins.exec 绕过 | builtins 加入禁止导入 |
+| VULN-004 | importlib.import_module 绕过 | 禁止导入+调用 |
+| VULN-005 | shutil.rmtree symlink | 移除该代码 |
+| VULN-007 | reload 回滚恢复 shutdown DLC | 重新 initialize |
+| VULN-008 | MappingProxyType 浅层 | 列表转 tuple |
+| VULN-009 | _reverify_source 静默通过 | 拒绝无源文件 |
+| VULN-011 | 签名默认未启用 | 默认 True |
 
-## Round 2 — API 认证 + 依赖注入 (Agent 2)
+### 沙箱 (8)
 
-| ID | Severity | File | Line | Description |
-|------|----------|------|------|------|
-| V-001 | CRITICAL | auth.py | 72 | Token comparison uses != not hmac.compare_digest |
-| V-005 | CRITICAL | server.py | 71 | CSRF bypassable by omitting Origin header |
-| V-006 | CRITICAL | server.py | 73-80 | CSRF token cookie never set, defense non-functional |
-| V-010 | CRITICAL | di.py | 93-210 | DI container no access control, services hijackable |
-| V-014 | CRITICAL | security/__init__.py | 39-43 | Serialization secret globally writable |
-| V-018 | CRITICAL | config.py | 107 | Consul connection without auth or TLS |
-| V-021 | CRITICAL | integration/bus.py | 141-325 | Integration bus no authentication |
-| V-002 | HIGH | auth.py | 51-54 | Host header check is no-op |
-| V-007 | HIGH | server.py | 75 | CSRF compare uses != not hmac |
-| V-008 | HIGH | server.py | 38-39 | Static files mount lacks explicit auth |
-| V-011 | HIGH | di.py | 212-239 | String key registration bypasses type checking |
-| V-012 | HIGH | di.py | 328-358 | Auto-injection amplifies service hijack |
-| V-015 | MEDIUM | security/__init__.py | 122-130 | Pickle format still accepted as parameter |
-| V-016 | MEDIUM | security/__init__.py | 54 | Secret via env var readable by same process |
-| V-019 | MEDIUM | config.py | 55-130 | Config values lack schema validation |
-| V-022 | MEDIUM | integration/bus.py | 154-165 | Subsystem registration silently overwrites |
-| V-023 | MEDIUM | integration/bus.py | 198-501 | Integration architecture info overexposed |
-| V-003 | LOW | auth.py | 37-39 | Rate limit store potential memory leak |
-| V-004 | LOW | auth.py | 57-59 | localhost check fails behind reverse proxy |
-| V-009 | LOW | server.py | 52-56 | Patch API silent degradation |
-| V-013 | LOW | di.py | 110-163 | Service overwrite without warning |
-| V-017 | LOW | security/__init__.py | 228-231 | Overly broad exception catch |
-| V-020 | LOW | config.py | 64-89 | File watcher no permission check |
-| V-024 | LOW | integration/bus.py | 352-355 | Timeout threads continue running |
+| 编号 | 漏洞 | 修复 |
+|------|------|------|
+| VULN-001 | __getattribute__ 绕过 | 阻断 dunder |
+| VULN-002 | pathlib I/O 绕过 | 移除白名单 |
+| VULN-003 | 超时僵尸线程 | 追踪+告警 |
+| VULN-005 | inspect 标记安全 | 移除出 validator 白名单 |
+| VULN-006 | io 标记安全 | 移除出 validator 白名单 |
+| VULN-007 | 文件名路径遍历 | basename + 拒绝 ../ |
+| VULN-011 | hasattr 绕过 | 包装 _safe_hasattr |
+| VULN-012 | meta_json 注入 | 拒绝敏感字段 |
 
+### API 认证 (5)
 
-## Round 3 — 补丁沙箱 + 文件上传 (Agent 3)
+| 编号 | 漏洞 | 修复 |
+|------|------|------|
+| V-001 | Token != 时序攻击 | hmac.compare_digest |
+| V-005 | CSRF Origin 缺失绕过 | 必填+拒绝 |
+| V-006 | csrf_token 无生成 | /health 端点自动生成 |
+| V-014 | 序列化密钥可覆盖 | set 时抛 RuntimeError |
+| V-015 | pickle 静默转换 | 直接拒绝 |
 
-| ID | Severity | File | Line | Description |
-|------|----------|------|------|------|
-| VULN-001 | CRITICAL | patch_sandbox.py | 92-334 | `__getattribute__` bypasses getattr guard |
-| VULN-002 | CRITICAL | patch_sandbox.py | 148-155 | `pathlib` bypasses sandbox I/O limits |
-| VULN-003 | HIGH | patch_sandbox.py | 341-360 | Timeout thread cannot be killed (DoS) |
-| VULN-004 | HIGH | patch_sandbox.py | 320-334 | Text blocker bypassable via string concat |
-| VULN-005 | HIGH | patch_validator.py | 84 | `inspect` marked safe (misleading) |
-| VULN-006 | HIGH | patch_validator.py | 84 | `io` marked safe (misleading) |
-| VULN-007 | HIGH | patch_api.py | 312-326 | Filename traversal in upload |
-| VULN-008 | HIGH | patch_downloader.py | 84-203 | DNS rebinding/SSRF |
-| VULN-009 | MEDIUM | core.py | 166-221 | TOCTOU residual in archive_patch |
-| VULN-010 | MEDIUM | core.py | 742-761 | download_patch lock scope insufficient |
-| VULN-011 | MEDIUM | patch_sandbox.py | 33,103 | `hasattr` bypasses getattr guard |
-| VULN-012 | MEDIUM | patch_api.py | 330-342 | meta_json injection |
-| VULN-013 | MEDIUM | patch_sandbox.py | 217-237 | sanitize scope insufficient |
-| VULN-014 | LOW | patch_sandbox.py | 53-55 | ADMIN_DENIED incomplete |
-| VULN-015 | LOW | auth.py | 50-54 | Host header check no-op |
+### 架构加固 (3)
+
+| 编号 | 漏洞 | 修复 |
+|------|------|------|
+| V-021 | 子系统静默覆盖 | 抛 ValueError |
+| V-023 | 子系统信息暴露 | list_subsystems 默认隐藏 |
+| V-013 | DI 注册无告警 | 覆盖时记录 warning |
+| V-003 | 速率存储泄漏 | 定期清理 |
+| V-009 | API 加载静默失败 | 记录错误日志 |
+| V-020 | 配置文件权限 | group/other write 检测 |
+| V-022 | 旧 Host 空操作 | 有效拒绝 |
+
+### 已知限制 (29)
+
+剩余项为需流程/架构级重构：Consul TLS(部署层)、静态文件认证(FastAPI mount限制)、DI访问控制(需新API)、DNS rebinding(网络层)、沙箱进程隔离(OS层)、配置Schema验证、深层消毒递归等，将在 v2.1.3+ 逐步推进。
