@@ -80,7 +80,9 @@ class BrainDLC:
         try:
             src_file = inspect.getfile(self.__class__)
         except (TypeError, OSError):
-            return True  # 无法确定源文件，允许通过
+            # VULN-009: 动态创建的类或无源文件的 DLC 拒绝 enable
+            logger.warning("无法确定 DLC %s 的源文件，拒绝启用", self.manifest.name)
+            return False
 
         from pathlib import Path
         src_path = Path(src_file)

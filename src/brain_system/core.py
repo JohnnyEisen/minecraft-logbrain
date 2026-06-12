@@ -80,8 +80,12 @@ class BrainCore:
 
         self._config_path = config_path
         self._config_raw = self._load_config(config_path)
-        # 对外暴露为只读 MappingProxyType，防止 DLC/补丁运行时修改安全配置
-        self.config = MappingProxyType(self._config_raw)
+        # 将列表值转为 tuple 后再包装 MappingProxyType (VULN-008 fix)
+        self._config_deep_readonly = dict(self._config_raw)
+        for k, v in self._config_deep_readonly.items():
+            if isinstance(v, list):
+                self._config_deep_readonly[k] = tuple(v)
+        self.config = MappingProxyType(self._config_deep_readonly)
         self._setup_logging()
 
         self.obs = build_observability(self.config)
@@ -278,7 +282,7 @@ class BrainCore:
         """在 import/exec 之前验证 DLC 文件签名。"""
 
         try:
-            required = bool(self.config.get("dlc_signature_required", False))
+            required = bool(self.config.get("dlc_signature_required", True))
             verify_if_present = bool(self.config.get("dlc_signature_verify_if_present", True))
             sig_exists = Path(str(path) + ".sig").exists()
             if required or (verify_if_present and sig_exists):
