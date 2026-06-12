@@ -305,14 +305,15 @@ class TestIntegrationBus(unittest.TestCase):
         self.assertIn("edges", graph)
         self.assertEqual(len(graph["nodes"]), 1)
 
-    def test_register_replaces_existing(self):
+    def test_register_rejects_duplicate(self):
+        """V-022 fix: duplicate registration now raises ValueError."""
         bus = IntegrationBus()
         mock1 = MockSubsystem("dup", version="1.0", state=SubsystemLifecycle.RUNNING)
         mock2 = MockSubsystem("dup", version="2.0", state=SubsystemLifecycle.RUNNING)
         bus.register(mock1)
-        bus.register(mock2)
-        sub = bus.get_subsystem("dup")
-        self.assertEqual(sub.version, "2.0")
+        with self.assertRaises(ValueError):
+            bus.register(mock2)
+        self.assertEqual(bus.get_subsystem("dup").version, "1.0")
 
     def test_publish_event_through_bus(self):
         bus = IntegrationBus()

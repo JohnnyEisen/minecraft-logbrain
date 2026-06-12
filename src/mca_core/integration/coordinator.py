@@ -457,7 +457,7 @@ class IntegrationCoordinator:
             关闭结果
         """
         if order is None:
-            registered = bus.list_subsystems()
+            registered = bus.list_subsystems(verbose=True)
             order = [s["name"] for s in reversed(registered)]
 
         results: Dict[str, Any] = {"order": order, "results": {}}
