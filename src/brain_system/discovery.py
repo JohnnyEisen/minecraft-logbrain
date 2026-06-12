@@ -24,10 +24,21 @@ _DLC_FORBIDDEN_CALLS = frozenset({
     "urllib.request.urlopen", "requests.get", "requests.post",
     "shutil.rmtree", "shutil.move",
     "ctypes.CDLL", "ctypes.WinDLL",
+    "builtins.exec", "builtins.eval", "builtins.__import__",
+    "importlib.import_module",
 })
 
 _DLC_FORBIDDEN_IMPORTS = frozenset({
     "ctypes", "pty", "tty", "smtplib", "subprocess", "socket",
+    "os", "builtins", "importlib",
+})
+
+# 即使通过 from X import Y 重命名后仍禁止的调用
+_DLC_FORBIDDEN_BARE_CALLS = frozenset({
+    "exec", "eval", "compile",
+    "system", "popen",          # from os import system/popen
+    "call", "run", "Popen",     # from subprocess import call/run/Popen
+    "CDLL", "WinDLL",           # from ctypes import CDLL/WinDLL
 })
 
 _DLC_MAX_FILE_BYTES = 512 * 1024  # 512KB
@@ -52,6 +63,7 @@ def _validate_dlc_source(code: str, file_path: Path) -> tuple[bool, str]:
     class _DLCSecurityVisitor(ast.NodeVisitor):
         def __init__(self):
             self.violations: list[str] = []
+            self._aliased_names: dict[str, str] = {}
 
         def visit_Call(self, node: ast.Call):
             parts = []
@@ -65,6 +77,14 @@ def _validate_dlc_source(code: str, file_path: Path) -> tuple[bool, str]:
 
             if full_name in _DLC_FORBIDDEN_CALLS:
                 self.violations.append(f"禁止的调用: {full_name}()")
+            # VULN-001 fix: also check bare names (from X import Y aliases)
+            elif len(parts) == 1 and parts[0] in _DLC_FORBIDDEN_BARE_CALLS:
+                self.violations.append(f"禁止的调用: {parts[0]}() (通过重命名导入)")
+            # VULN-001 fix: check aliased names
+            elif parts[0] in self._aliased_names:
+                resolved = self._aliased_names[parts[0]]
+                if f"{resolved}.{'.'.join(parts[1:])}" in _DLC_FORBIDDEN_CALLS:
+                    self.violations.append(f"禁止的调用: {full_name}() (alias of {resolved})")
             self.generic_visit(node)
 
         def visit_Import(self, node: ast.Import):
@@ -79,6 +99,11 @@ def _validate_dlc_source(code: str, file_path: Path) -> tuple[bool, str]:
                 base = node.module.split(".")[0]
                 if base in _DLC_FORBIDDEN_IMPORTS:
                     self.violations.append(f"禁止的导入: {node.module}")
+                # VULN-001 fix: 记录别名映射 (from os import system as sh)
+                for alias in node.names:
+                    local = alias.asname or alias.name
+                    qualified = f"{node.module}.{alias.name}"
+                    self._aliased_names[local] = node.module
             self.generic_visit(node)
 
     visitor = _DLCSecurityVisitor()

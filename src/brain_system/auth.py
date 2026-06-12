@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import hmac
 import os
 import threading
 import time
@@ -69,5 +70,5 @@ def verify_auth(request: Request, authorization: Optional[str] = Header(None)) -
         raise HTTPException(401, "Missing or invalid Authorization header")
 
     token = authorization[len("Bearer "):]
-    if token != expected:
+    if not hmac.compare_digest(token, expected):
         raise HTTPException(403, "Invalid API token")
