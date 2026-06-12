@@ -53,3 +53,23 @@
 | V-020 | LOW | config.py | 64-89 | File watcher no permission check |
 | V-024 | LOW | integration/bus.py | 352-355 | Timeout threads continue running |
 
+
+## Round 3 — 补丁沙箱 + 文件上传 (Agent 3)
+
+| ID | Severity | File | Line | Description |
+|------|----------|------|------|------|
+| VULN-001 | CRITICAL | patch_sandbox.py | 92-334 | `__getattribute__` bypasses getattr guard |
+| VULN-002 | CRITICAL | patch_sandbox.py | 148-155 | `pathlib` bypasses sandbox I/O limits |
+| VULN-003 | HIGH | patch_sandbox.py | 341-360 | Timeout thread cannot be killed (DoS) |
+| VULN-004 | HIGH | patch_sandbox.py | 320-334 | Text blocker bypassable via string concat |
+| VULN-005 | HIGH | patch_validator.py | 84 | `inspect` marked safe (misleading) |
+| VULN-006 | HIGH | patch_validator.py | 84 | `io` marked safe (misleading) |
+| VULN-007 | HIGH | patch_api.py | 312-326 | Filename traversal in upload |
+| VULN-008 | HIGH | patch_downloader.py | 84-203 | DNS rebinding/SSRF |
+| VULN-009 | MEDIUM | core.py | 166-221 | TOCTOU residual in archive_patch |
+| VULN-010 | MEDIUM | core.py | 742-761 | download_patch lock scope insufficient |
+| VULN-011 | MEDIUM | patch_sandbox.py | 33,103 | `hasattr` bypasses getattr guard |
+| VULN-012 | MEDIUM | patch_api.py | 330-342 | meta_json injection |
+| VULN-013 | MEDIUM | patch_sandbox.py | 217-237 | sanitize scope insufficient |
+| VULN-014 | LOW | patch_sandbox.py | 53-55 | ADMIN_DENIED incomplete |
+| VULN-015 | LOW | auth.py | 50-54 | Host header check no-op |

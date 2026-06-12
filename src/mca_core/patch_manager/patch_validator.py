@@ -81,7 +81,7 @@ _SAFE_IMPORTS: set[str] = {
     "abc", "collections", "collections.abc",
     "copy", "dataclasses", "enum",
     "functools", "hashlib", "hmac",
-    "inspect", "io", "itertools",
+    "itertools",
     "math", "numbers", "operator",
     "random", "statistics", "string",
     "textwrap", "typing", "typing_extensions",

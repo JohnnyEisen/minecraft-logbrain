@@ -92,6 +92,7 @@ def _make_restricted_builtins(level: PermissionLevel) -> dict[str, Any]:
     _blocked_dunders = frozenset({
         "__subclasses__", "__bases__", "__mro__", "__globals__",
         "__code__", "__closure__", "__builtins__", "__loader__",
+        "__getattribute__", "__dict__",
     })
     _original_getattr = safe.get("getattr", builtins.getattr)
     def _safe_getattr(obj, name, *args):
@@ -101,6 +102,14 @@ def _make_restricted_builtins(level: PermissionLevel) -> dict[str, Any]:
             )
         return _original_getattr(obj, name, *args)
     safe["getattr"] = _safe_getattr
+
+    # 包装 hasattr — C级 hasattr 内部调 PyObject_GetAttr 绕过 Python 层守卫
+    _original_hasattr = safe.get("hasattr", builtins.hasattr)
+    def _safe_hasattr(obj, name):
+        if isinstance(name, str) and name in _blocked_dunders:
+            return False
+        return _original_hasattr(obj, name)
+    safe["hasattr"] = _safe_hasattr
 
     # RESTRICTED 级别下不允许任何 I/O
     if level == PermissionLevel.RESTRICTED:
@@ -150,7 +159,7 @@ _SANDBOX_SAFE_MODULES = frozenset({
     "functools", "hashlib", "hmac", "itertools",
     "math", "numbers", "operator", "statistics", "string",
     "textwrap", "typing", "typing_extensions", "uuid", "warnings", "weakref",
-    "json", "time", "datetime", "re", "pathlib",
+    "json", "time", "datetime", "re",
     "numpy", "matplotlib", "networkx",
 })
 
