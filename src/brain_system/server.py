@@ -30,7 +30,7 @@ def create_app(brain: Any):
         uvicorn.run(app, host="127.0.0.1", port=8000)
     """
 
-    app = FastAPI(title="brain-system", docs_url=None, redoc_url=None)
+    app = FastAPI(title="LogBrain", docs_url=None, redoc_url=None)
 
     # 补丁管理 Web 控制台: 静态文件
     _static_dir = os.path.join(os.path.dirname(__file__), "static")

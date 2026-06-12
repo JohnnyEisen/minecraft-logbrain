@@ -224,6 +224,12 @@ class PatchManager:
             key = get_patch_key()
         if key:
             meta.signature = compute_hmac_signature(dest, key)
+            # 生成元数据认证 token
+            from .integrity import _compute_auth_token
+            meta_dict = meta.to_dict()
+            meta_dict["file_hash"] = meta.file_hash
+            meta_dict["signature"] = meta.signature
+            meta.integrity_token = _compute_auth_token(dest, meta_dict, key)
 
         if not meta.created_date:
             meta.created_date = datetime.now().isoformat()

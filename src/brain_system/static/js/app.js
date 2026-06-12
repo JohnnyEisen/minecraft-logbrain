@@ -82,7 +82,7 @@ const App = {
           </a>
         </div>
         <div class="sidebar-footer">
-          v2.1.0 | LogBrain Brain System
+          v2.1.1 | LogBrain Brain System
         </div>
       </nav>
       <main class="main">
