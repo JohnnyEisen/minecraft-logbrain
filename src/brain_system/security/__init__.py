@@ -37,8 +37,15 @@ _MISSING_KEY_MSG = (
 
 
 def set_serialization_secret(secret: bytes) -> None:
-    """设置序列化签名密钥（启动时调用一次）"""
+    """设置序列化签名密钥（启动时调用一次）。
+
+    V-014 fix: 仅允许设置一次，防止运行时被恶意代码覆盖。
+    """
     global _SERIALIZATION_SECRET, _SERIALIZATION_SECRET_SET
+    if _SERIALIZATION_SECRET_SET:
+        raise RuntimeError(
+            "序列化密钥已设置，不可重复调用 set_serialization_secret()"
+        )
     _SERIALIZATION_SECRET = secret
     _SERIALIZATION_SECRET_SET = True
 
@@ -123,11 +130,7 @@ class SafeSerializer:
             raise ValueError(f"不支持的序列化格式: {format}")
 
         if format in ("pickle", "base64_pickle"):
-            _logger.warning(
-                "pickle格式已被弃用且不安全，自动切换到json格式。"
-                "请更新代码使用json格式。"
-            )
-            format = "json"
+            raise ValueError("pickle 格式不安全，已被禁用。请使用 json 格式。")
 
         def _convert(obj: Any) -> Any:
             if isinstance(obj, dict):
