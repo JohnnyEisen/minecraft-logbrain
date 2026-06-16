@@ -16,7 +16,7 @@ import math
 from typing import Any, List, Optional, Tuple
 import os
 
-from brain_system import BrainCore, BrainDLC, BrainDLCType, DLCManifest
+from brain_system import BrainCore, BrainDLC, BrainDLCType, DLCManifest, __version__
 from brain_system.utils import optional_import
 
 # 延迟导入，避免启动时卡顿
