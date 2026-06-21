@@ -46,8 +46,13 @@ def verify_auth(request: Request, authorization: Optional[str] = Header(None)) -
     """验证 API 认证令牌。
 
     VULN-007 修复: 添加 Host header 验证防止 DNS rebinding。
+    V-004 修复: 支持反向代理 (X-Forwarded-For)。
     """
     client_ip = request.client.host if request.client else "unknown"
+    # 反向代理: 取 X-Forwarded-For 中最左边的IP (真实客户端)
+    forwarded = request.headers.get("X-Forwarded-For", "")
+    if forwarded:
+        client_ip = forwarded.split(",")[0].strip()
     _check_rate_limit(client_ip)
 
     # Host header 验证
