@@ -89,6 +89,18 @@ class DIContainer:
         self._scoped_instances: Dict[Type[Any], Any] = {}
         self._resolving: Set[Type[Any]] = set()
         self._parent: Optional["DIContainer"] = None
+        self._sealed: bool = False
+
+    def seal(self) -> None:
+        """锁定容器，禁止新注册。bootstrap 完成后调用。"""
+        self._sealed = True
+        logging.info("DI 容器已锁定 (sealed)")
+
+    def _check_sealed(self, service_type: Type[Any]) -> None:
+        if self._sealed:
+            raise RuntimeError(
+                f"DI 容器已锁定，不允许注册新服务: {service_type.__name__}"
+            )
 
     def register_singleton(
         self,
@@ -107,6 +119,7 @@ class DIContainer:
         Returns:
             容器实例（支持链式调用）
         """
+        self._check_sealed(service_type)
         if service_type in self._services:
             logging.warning("DI: 服务 '%s' 被覆盖注册", service_type.__name__)
         self._services[service_type] = ServiceDescriptor(
