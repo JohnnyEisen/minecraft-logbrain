@@ -302,11 +302,22 @@ class DLCManager:
 
         # 第一阶段：发现所有 DLC 文件
         pending_cls: list[type[BrainDLC]] = []
+        import hashlib as _hashlib
         for file_path in dlc_files:
             if not core._verify_dlc_file_signature(file_path):
                 continue
+            # VULN-006: 加载前计算哈希, exec_module 后验证文件未被替换
+            try:
+                pre_hash = _hashlib.sha256(file_path.read_bytes()).hexdigest()
+            except Exception:
+                continue
             try:
                 classes = load_dlc_classes_from_file(file_path)
+                # VULN-006: 加载后重新验证哈希
+                post_hash = _hashlib.sha256(file_path.read_bytes()).hexdigest()
+                if pre_hash != post_hash:
+                    logging.error("DLC 文件 %s 在加载期间被修改，拒绝", file_path.name)
+                    continue
                 pending_cls.extend(classes)
             except Exception as e:
                 logging.error("读取 DLC 类失败 %s: %s", file_path, e)
