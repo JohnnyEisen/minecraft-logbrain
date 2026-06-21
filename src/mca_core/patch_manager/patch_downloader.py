@@ -159,6 +159,22 @@ class PatchDownloader:
         except Exception as e:
             return False, str(e)
 
+        # VULN-008: 连接后验证实际 IP（DNS rebinding 防护）
+        try:
+            sock = response.fp.raw._sock if hasattr(response.fp, 'raw') else None
+            if sock:
+                import ipaddress as _ipa
+                peer_ip, _ = sock.getpeername()
+                try:
+                    ip = _ipa.ip_address(peer_ip)
+                    if ip.is_private or ip.is_loopback or ip.is_link_local:
+                        response.close()
+                        return False, f"DNS rebinding 检测: 实际连接到内网地址 {peer_ip}"
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
         total_bytes = response.headers.get("Content-Length")
         total = int(total_bytes) if total_bytes else -1
 

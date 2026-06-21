@@ -111,10 +111,23 @@ def _format_err(expected: str, actual: str) -> str:
     return f"{_ERR_PREFIX}{expected[:16]}..., 实际={actual[:16]}..."
 
 
+# 构成 integrity_token 的核心元数据字段（稳定字段，不受模型升级影响）
+_META_CORE_FIELDS = (
+    "patch_id", "name", "version", "description", "author",
+    "created_date", "severity", "target_version",
+    "dependencies", "conflicts", "replaces", "affected_modules", "tags",
+)
+
+
 def _compute_auth_token(filepath: str, meta: dict, key: bytes) -> str:
+    """计算补丁完整性认证 token。
+
+    仅使用核心稳定字段 + 文件哈希 + 签名，
+    不受 PatchMeta 新增非核心字段（如 permission_level、risk_level）的影响。
+    """
     import json as _json
     file_hash = compute_file_hash(filepath)
-    meta_sig = {k: v for k, v in meta.items() if k != "integrity_token"}
+    meta_sig = {k: meta.get(k, "") for k in _META_CORE_FIELDS}
     meta_hash = compute_content_hash(_json.dumps(meta_sig, sort_keys=True, ensure_ascii=False).encode())
     signature = meta.get("signature", "")
     patch_id = meta.get("patch_id", "")

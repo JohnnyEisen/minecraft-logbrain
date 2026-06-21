@@ -243,27 +243,32 @@ def _safe_import(name, globals=None, locals=None, fromlist=(), level=0):
     return mod
 
 
-def _sanitize_imported_module(mod):
-    """清除已加载模块中泄露的危险模块引用。"""
+def _sanitize_imported_module(mod, depth: int = 0):
+    """清除已加载模块中泄露的危险模块引用。递归清理子模块。"""
+    if depth > 3:
+        return
     import sys as _sys
     for attr_name in list(mod.__dict__.keys()):
-        if attr_name.startswith("_"):
-            continue
         try:
             attr = getattr(mod, attr_name)
         except Exception:
             continue
+        # VULN-013: 也检查下划线前缀属性 (如 _os, _sys)
         if attr is _sys:
             try:
                 delattr(mod, attr_name)
             except Exception:
                 pass
         elif hasattr(attr, "__name__"):
-            if getattr(attr, "__name__", "").split(".")[0] in _SANDBOX_BLOCKED_REFERENCES:
+            module_root = getattr(attr, "__name__", "").split(".")[0]
+            if module_root in _SANDBOX_BLOCKED_REFERENCES:
                 try:
                     delattr(mod, attr_name)
                 except Exception:
                     pass
+            # VULN-013: 递归清理子模块 (numpy.linalg 等)
+            elif hasattr(attr, "__dict__") and module_root in _SANDBOX_SAFE_MODULES:
+                _sanitize_imported_module(attr, depth + 1)
 
 
 def create_sandbox_globals(
