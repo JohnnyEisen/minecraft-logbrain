@@ -12,6 +12,32 @@ from typing import Any, Callable, Optional
 
 ConfigListener = Callable[[dict[str, Any]], None]
 
+# V-019: 配置 schema 基础验证
+def _validate_config_schema(data: dict):
+    """验证配置顶级键的类型安全性"""
+    _known_schemas = {
+        "dlc_search_paths": list,
+        "dlc_public_key_pem_files": list,
+        "dlc_signature_required": bool,
+        "dlc_signature_verify_if_present": bool,
+        "cache_max_entries": int,
+        "cache_ttl_seconds": (int, float),
+        "retry_max_attempts": int,
+        "thread_pool_size": int,
+        "process_pool_size": int,
+        "log_level": str,
+        "config_source": str,
+        "enable_config_watch": bool,
+        "leader_election_enabled": bool,
+        "task_default_timeout": (int, float),
+        "slow_task_threshold": (int, float),
+        "monitoring_interval": (int, float),
+    }
+    for key, expected_type in _known_schemas.items():
+        if key in data and not isinstance(data[key], expected_type):
+            logging.warning("配置项 '%s' 类型错误: 期望 %s, 实际 %s",
+                          key, expected_type, type(data[key]).__name__)
+
 
 # 防止超大配置导致内存/解析 DoS
 MAX_CONFIG_SOURCE_FILE_BYTES = 1024 * 1024  # 1MB
@@ -56,6 +82,8 @@ class FileConfigSource(ConfigSource):
             if not isinstance(data, dict):
                 logging.warning("配置文件根节点必须为对象(dict): %s", self._path)
                 return {}
+            # V-019: 基础 schema 验证
+            _validate_config_schema(data)
             return data
         except Exception as e:
             logging.warning("配置文件解析失败: %s", e)
@@ -93,11 +121,14 @@ class FileConfigSource(ConfigSource):
 
 
 class ConsulConfigSource(ConfigSource):
-    def __init__(self, *, host: str, port: int, key_prefix: str, poll_seconds: float = 2.0):
+    def __init__(self, *, host: str, port: int, key_prefix: str, poll_seconds: float = 2.0,
+                 token: str = "", scheme: str = "http"):
         self._host = host
         self._port = int(port)
         self._key_prefix = key_prefix.rstrip("/")
         self._poll_seconds = float(poll_seconds)
+        self._token = token
+        self._scheme = scheme
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._last_index: Optional[int] = None
@@ -107,7 +138,9 @@ class ConsulConfigSource(ConfigSource):
         except Exception as e:  # pragma: no cover
             raise RuntimeError("未安装 Consul 客户端，安装: pip install 'brain-system[config]'") from e
 
-        self._consul = consul.Consul(host=self._host, port=self._port)
+        self._consul = consul.Consul(host=self._host, port=self._port,
+                                      token=self._token if self._token else None,
+                                      scheme=self._scheme)
 
     def load(self) -> dict[str, Any]:
         data: dict[str, Any] = {}
