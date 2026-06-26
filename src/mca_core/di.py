@@ -228,6 +228,8 @@ class DIContainer:
         """
         通过字符串键注册实例（向后兼容）。
 
+        安全: 仅允许 system./config. 前缀键名 (V-011 fix).
+
         Args:
             key: 服务标识符
             instance: 服务实例
