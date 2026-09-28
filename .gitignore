@@ -157,3 +157,6 @@ docs/security/PENETRATION_TEST_REPORT*.md
 
 # ==================== 内部文档 ====================
 docs/_build/
+
+# 本地归档区（碎片整理产物，永不入库）
+archive/
