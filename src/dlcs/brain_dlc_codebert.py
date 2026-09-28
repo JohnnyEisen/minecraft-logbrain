@@ -91,6 +91,12 @@ class CodeBertDLC(BrainDLC):
     def set_model_path(self, path: str) -> None:
         """设置微调模型路径。"""
         if path and os.path.isdir(path):
+            from .model_guard import validate_model_dir
+            ok, reason = validate_model_dir(path)
+            if not ok:
+                # VULN-006: 来源/清单校验失败，拒绝接受该路径（fail-closed）
+                logging.error(f"微调模型路径安全校验失败，拒绝使用 ({reason}): {path}")
+                return
             self._model_path = path
             logging.info(f"微调模型路径已设置: {path}")
         elif path:
@@ -99,6 +105,12 @@ class CodeBertDLC(BrainDLC):
     def _resolve_model_name(self) -> str:
         """解析模型名称：优先使用微调模型，否则用基础模型。"""
         if self._model_path and os.path.isdir(self._model_path):
+            # VULN-006: 加载前二次校验（防路径在接受后被替换/重定向）
+            from .model_guard import validate_model_dir
+            ok, reason = validate_model_dir(self._model_path)
+            if not ok:
+                logging.error(f"微调模型目录校验失败，回退基础模型 ({reason}): {self._model_path}")
+                return "sentence-transformers/all-MiniLM-L6-v2"
             logging.info(f"使用微调模型: {self._model_path}")
             return self._model_path
         return "sentence-transformers/all-MiniLM-L6-v2"

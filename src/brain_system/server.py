@@ -30,7 +30,16 @@ def create_app(brain: Any):
         uvicorn.run(app, host="127.0.0.1", port=8000)
     """
 
-    app = FastAPI(title="LogBrain", docs_url=None, redoc_url=None)
+    # VULN-007 修复: 生产模式（默认）关闭 openapi/docs/redoc，
+    # 消除匿名端点枚举面；仅 MCA_ENV=dev/development/local 时开启。
+    _env = os.environ.get("MCA_ENV", "production").strip().lower()
+    _enable_schema = _env in ("dev", "development", "local")
+    app = FastAPI(
+        title="LogBrain",
+        docs_url="/docs" if _enable_schema else None,
+        redoc_url=None,
+        openapi_url="/openapi.json" if _enable_schema else None,
+    )
 
     # 补丁管理 Web 控制台: 静态文件
     _static_dir = os.path.join(os.path.dirname(__file__), "static")

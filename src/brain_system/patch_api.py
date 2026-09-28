@@ -323,9 +323,20 @@ async def upload_patch(
 
     pm = get_pm()
 
-    tmp_path = os.path.join(tempfile.gettempdir(), safe_name)
-    with open(tmp_path, "wb") as f:
+    # VULN-007 修复: tempfile.mkstemp 随机名 + O_EXCL 创建，
+    # 消除可预测临时文件名（原 tempfile.gettempdir()+basename）的
+    # 符号链接/抢占竞态窗口。
+    try:
+        fd, tmp_path = tempfile.mkstemp(prefix="patch_upload_", suffix=".py")
+    except OSError as e:
+        return _error(f"临时文件创建失败: {e}", 500)
+    with os.fdopen(fd, "wb") as f:
         f.write(content)
+
+    # 防穿越: 实际落盘路径必须仍在系统临时目录内
+    _resolved = os.path.realpath(tmp_path)
+    if not _resolved.startswith(os.path.realpath(tempfile.gettempdir()) + os.sep):
+        return _error("临时文件路径异常，已拒绝", 500)
 
     try:
         # 解析元数据
