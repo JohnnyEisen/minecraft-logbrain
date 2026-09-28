@@ -111,8 +111,14 @@ _ERR_PREFIX = "文件哈希不匹配: 期望="
 PATCH_SIGNATURE_REQUIRED: bool = os.environ.get("MCA_PATCH_SIGNATURE_REQUIRED", "1") != "0"
 
 
-def _format_err(expected: str, actual: str) -> str:
-    return f"{_ERR_PREFIX}{expected[:16]}..., 实际={actual[:16]}..."
+def _format_err(expected: str, actual: str, label: str = "文件哈希不匹配") -> str:
+    """构造不匹配错误消息。
+
+    label 默认为文件哈希语义（verify_meta_consistency 的哈希比对路径
+    自行内联同款文案）；integrity_token 校验路径必须传入专属 label，
+    避免"实为 token 不匹配却报文件哈希不匹配"的误导。
+    """
+    return f"{label}: 期望={expected[:16]}..., 实际={actual[:16]}..."
 
 
 # 构成 integrity_token 的核心元数据字段（稳定字段，不受模型升级影响）
@@ -147,7 +153,7 @@ def _verify_auth_token(filepath: str, meta: dict, key: bytes) -> tuple[bool, str
         return False, "元数据缺少 integrity_token，完整性校验拒绝"
     actual = _compute_auth_token(filepath, meta, key)
     if not hmac.compare_digest(actual, expected):
-        return False, _format_err(expected, actual)
+        return False, _format_err(expected, actual, label="integrity_token 不匹配")
     return True, ""
 
 
