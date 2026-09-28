@@ -55,6 +55,20 @@ class TestEndToEndLifecycle(unittest.TestCase):
             file_hash=compute_file_hash(patch_path),
         )
 
+        # VULN-002 契约: 补丁必须携带真实签名与 integrity_token 才能
+        # 通过 verify_integrity（fail-closed），测试夹具用项目密钥签名。
+        from mca_core.patch_manager.integrity import (
+            _compute_auth_token,
+            compute_hmac_signature,
+            get_patch_key,
+        )
+        _key = get_patch_key()
+        if _key:
+            meta.signature = compute_hmac_signature(patch_path, _key)
+            _d = meta.to_dict()
+            _d["file_hash"] = meta.file_hash
+            meta.integrity_token = _compute_auth_token(patch_path, _d, _key)
+
         meta_path = os.path.join(self.tmpdir, f"{patch_id}.meta.json")
         with open(meta_path, "w") as f:
             json.dump(meta.to_dict(), f, indent=2)
@@ -292,6 +306,20 @@ class TestSubsystemAPIIntegration(unittest.TestCase):
             tags=kwargs.get("tags", []),
             file_hash=compute_file_hash(patch_path),
         )
+
+        # VULN-002 契约: 补丁必须携带真实签名与 integrity_token 才能
+        # 通过 verify_integrity（fail-closed），测试夹具用项目密钥签名。
+        from mca_core.patch_manager.integrity import (
+            _compute_auth_token,
+            compute_hmac_signature,
+            get_patch_key,
+        )
+        _key = get_patch_key()
+        if _key:
+            meta.signature = compute_hmac_signature(patch_path, _key)
+            _d = meta.to_dict()
+            _d["file_hash"] = meta.file_hash
+            meta.integrity_token = _compute_auth_token(patch_path, _d, _key)
 
         meta_path = os.path.join(self.tmpdir, f"{patch_id}.meta.json")
         with open(meta_path, "w") as f:

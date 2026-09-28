@@ -207,8 +207,38 @@ class TestPatchSubsystemOperations(unittest.TestCase):
             "file_hash": compute_file_hash(patch_path),
             "tags": ["test"],
         }
+        # VULN-002 契约: 补丁必须携带真实签名与 integrity_token 才能
+        # 通过 verify_integrity（fail-closed）。token 覆盖 PatchMeta 核心
+        # 字段，必须经 PatchMeta 往返保证字段一致，否则 verify 端重算
+        # 的 token 与夹具端不一致（默认值 vs 空串）。
+        from mca_core.patch_manager.integrity import (
+            _compute_auth_token,
+            compute_hmac_signature,
+            get_patch_key,
+        )
+        from mca_core.patch_manager.models import PatchMeta
+        pm_meta = PatchMeta(
+            patch_id="test_fix_001",
+            name="测试补丁",
+            version="1.0.0",
+            description="单元测试补丁",
+            author="Test",
+            severity="medium",
+            dependencies=[],
+            conflicts=[],
+            replaces=[],
+            affected_modules=["test_module"],
+            file_hash=compute_file_hash(patch_path),
+            tags=["test"],
+        )
+        _key = get_patch_key()
+        if _key:
+            pm_meta.signature = compute_hmac_signature(patch_path, _key)
+            _d = pm_meta.to_dict()
+            _d["file_hash"] = pm_meta.file_hash
+            pm_meta.integrity_token = _compute_auth_token(patch_path, _d, _key)
         with open(meta_path, "w") as f:
-            json.dump(meta, f)
+            json.dump(pm_meta.to_dict(), f)
 
     def test_scan_discovers_patches(self):
         with PatchSubsystem(self.tmpdir) as sub:

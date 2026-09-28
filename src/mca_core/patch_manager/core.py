@@ -207,6 +207,16 @@ class PatchManager:
 
         pid = meta.patch_id
 
+        # ── VULN-002 修复: 无密钥时拒绝上传（fail-closed）──
+        # 签名强制开启时，无法签名的补丁永远无法通过 verify_integrity，
+        # 必须在写入补丁目录之前拒绝。
+        from .integrity import PATCH_SIGNATURE_REQUIRED
+        if get_patch_key() is None and PATCH_SIGNATURE_REQUIRED:
+            return False, (
+                "安全错误: 签名密钥未配置（MCA_PATCH_SECRET 或用户密钥文件），"
+                "无法对补丁签名，已拒绝上传（fail-closed）"
+            )
+
         if self._store.patch_exists(pid):
             self._store.archive_patch(pid)
 
@@ -299,11 +309,24 @@ class PatchManager:
         if not verify_file_integrity(patch_file, meta.file_hash):
             return False, "文件哈希不匹配"
 
-        # 3. 签名验证
+        # 3. 签名验证 — VULN-002 修复: fail-closed
         key = get_patch_key()
-        if key and meta.signature:
+        from .integrity import PATCH_SIGNATURE_REQUIRED
+        if PATCH_SIGNATURE_REQUIRED:
+            if key is None:
+                return False, "签名密钥未配置，完整性校验拒绝（fail-closed）"
+            if not meta.signature:
+                return False, "元数据缺少签名，完整性校验拒绝"
             if not verify_signature(patch_file, key, meta.signature):
                 return False, "签名验证失败"
+        else:
+            import logging
+            logging.getLogger(__name__).warning(
+                "MCA_PATCH_SIGNATURE_REQUIRED=0，签名校验已降级（仅哈希校验）"
+            )
+            if key and meta.signature:
+                if not verify_signature(patch_file, key, meta.signature):
+                    return False, "签名验证失败"
 
         # 4. 元数据认证 token 校验
         if key:
@@ -316,6 +339,8 @@ class PatchManager:
             ok, err = _verify_auth_token(patch_file, meta_dict, key)
             if not ok:
                 return False, err
+        elif PATCH_SIGNATURE_REQUIRED:
+            return False, "签名密钥未配置，无法校验 integrity_token（fail-closed）"
 
         return True, "完整性校验通过"
 

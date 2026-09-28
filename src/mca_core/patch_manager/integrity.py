@@ -106,6 +106,10 @@ def verify_meta_consistency(patch_file: str, meta_file: str) -> tuple[bool, str]
 
 _ERR_PREFIX = "文件哈希不匹配: 期望="
 
+# VULN-002 修复: 全局签名强制开关，默认 True（fail-closed）。
+# 仅在显式设置 MCA_PATCH_SIGNATURE_REQUIRED=0 时降级为兼容模式（仅哈希校验）。
+PATCH_SIGNATURE_REQUIRED: bool = os.environ.get("MCA_PATCH_SIGNATURE_REQUIRED", "1") != "0"
+
 
 def _format_err(expected: str, actual: str) -> str:
     return f"{_ERR_PREFIX}{expected[:16]}..., 实际={actual[:16]}..."
@@ -139,7 +143,8 @@ def _compute_auth_token(filepath: str, meta: dict, key: bytes) -> str:
 def _verify_auth_token(filepath: str, meta: dict, key: bytes) -> tuple[bool, str]:
     expected = meta.get("integrity_token", "")
     if not expected:
-        return True, ""
+        # VULN-002 修复: 缺失 integrity_token 一律拒绝（原实现返回 True → fail-open）
+        return False, "元数据缺少 integrity_token，完整性校验拒绝"
     actual = _compute_auth_token(filepath, meta, key)
     if not hmac.compare_digest(actual, expected):
         return False, _format_err(expected, actual)

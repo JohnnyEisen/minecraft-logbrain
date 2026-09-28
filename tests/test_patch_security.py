@@ -152,3 +152,70 @@ def test_sandbox_blocks_getattr_frame_pivot(tmp_path):
         level=PermissionLevel.RESTRICTED,
     )
     assert not result.success, "getattr 帧属性枢轴未被拦截"
+
+
+# ── VULN-002 回归: 签名强制 fail-closed ──
+def _make_patch(tmp_path, patch_id="t_fc", with_sig=True, with_token=True):
+    import json as _json
+    import os as _os
+    from mca_core.patch_manager.integrity import (
+        _compute_auth_token,
+        compute_file_hash,
+        compute_hmac_signature,
+        get_patch_key,
+    )
+    from mca_core.patch_manager.models import PatchMeta
+
+    p = tmp_path / f"{patch_id}.py"
+    p.write_text("def apply():\n    return True\n", encoding="utf-8")
+    m = PatchMeta(
+        patch_id=patch_id, name="T", version="1.0.0", description="x",
+        file_hash=compute_file_hash(str(p)),
+    )
+    key = get_patch_key()
+    if key and with_sig:
+        m.signature = compute_hmac_signature(str(p), key)
+        if with_token:
+            d = m.to_dict()
+            d["file_hash"] = m.file_hash
+            m.integrity_token = _compute_auth_token(str(p), d, key)
+    (tmp_path / f"{patch_id}.meta.json").write_text(
+        _json.dumps(m.to_dict()), encoding="utf-8")
+    return str(p)
+
+
+def test_verify_rejects_missing_signature(tmp_path):
+    from mca_core.patch_manager import PatchManager
+    _make_patch(tmp_path, "t_nosig", with_sig=False)
+    pm = PatchManager(str(tmp_path))
+    pm.scan()
+    ok, msg = pm.verify_integrity("t_nosig")
+    assert not ok and "签名" in msg, msg
+
+
+def test_verify_rejects_missing_token(tmp_path):
+    from mca_core.patch_manager import PatchManager
+    _make_patch(tmp_path, "t_notok", with_sig=True, with_token=False)
+    pm = PatchManager(str(tmp_path))
+    pm.scan()
+    ok, msg = pm.verify_integrity("t_notok")
+    assert not ok, msg
+
+
+def test_verify_rejects_when_key_missing(tmp_path, monkeypatch):
+    from mca_core.patch_manager import PatchManager
+    import mca_core.patch_manager.core as core_mod
+    _make_patch(tmp_path, "t_nokey", with_sig=True, with_token=True)
+    monkeypatch.setattr(core_mod, "get_patch_key", lambda: None)
+    pm = PatchManager(str(tmp_path))
+    pm.scan()
+    ok, msg = pm.verify_integrity("t_nokey")
+    assert not ok and "fail-closed" in msg, msg
+
+
+def test_verify_auth_token_missing_token_fails(tmp_path):
+    from mca_core.patch_manager.integrity import _verify_auth_token
+    p = tmp_path / "x.py"
+    p.write_text("def apply():\n    return True\n", encoding="utf-8")
+    ok, msg = _verify_auth_token(str(p), {}, b"any-key")
+    assert not ok and "integrity_token" in msg, msg
