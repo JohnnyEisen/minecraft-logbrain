@@ -158,33 +158,103 @@ def compute_snapshot_checksum(state: dict) -> str:
 
 
 def _find_project_root() -> str:
-    """从当前模块向上查找项目根目录（包含 .patch_key 或 main.py）。"""
-    current = os.path.dirname(os.path.abspath(__file__))
-    for _ in range(6):
-        if os.path.exists(os.path.join(current, "main.py")) or \
-           os.path.exists(os.path.join(current, ".patch_key")):
-            return current
-        parent = os.path.dirname(current)
-        if parent == current:
-            break
-        current = parent
+    """返回遗留 .patch_key 的查找根。
+
+    VULN-密钥修复: 原实现从模块位置向上扫描 6 层找 .patch_key / main.py，
+    攻击者可在任一上层目录放置伪造 .patch_key 劫持签名密钥（红队三状态
+    矩阵第 3 行）。现固定返回当前工作目录——遗留密钥仅在显式工作目录下
+    查找，不做任何向上扫描。
+    """
     return os.getcwd()
 
 
+def _user_key_file() -> str:
+    """用户私有密钥文件固定路径（项目目录之外）。"""
+    base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
+    return os.path.join(base, "logbrain", "patch.key")
+
+
+def _load_legacy_key_file(key_file: str) -> Optional[bytes]:
+    """读取遗留 .patch_key：保留兼容，但做权限检查并输出弃用告警。"""
+    if not os.path.exists(key_file):
+        return None
+    import logging
+    try:
+        st = os.stat(key_file)
+        if getattr(st, "st_mode", 0) & 0o077:
+            logging.getLogger(__name__).warning(
+                "遗留密钥文件 %s 权限过宽（group/other 可读），建议迁移至用户私有密钥目录",
+                key_file,
+            )
+        with open(key_file, "r") as f:
+            key = f.read().strip()
+        if key:
+            logging.getLogger(__name__).warning(
+                "检测到遗留 .patch_key（%s）。项目目录明文密钥已弃用，"
+                "请迁移至用户私有密钥文件: %s（MCA_PATCH_SECRET 环境变量优先）",
+                key_file, _user_key_file(),
+            )
+            return key.encode("utf-8")
+    except OSError as e:
+        logging.getLogger(__name__).error("读取遗留密钥文件失败: %s (%s)", key_file, e)
+    return None
+
+
+def _ensure_user_key() -> Optional[bytes]:
+    """首次运行生成用户私有密钥（secrets.token_bytes(32)，0o600 独占创建）。
+
+    生成失败（不可恢复）时返回 None，调用方必须 fail-closed。
+    """
+    import secrets
+    key_file = _user_key_file()
+    import logging
+    try:
+        os.makedirs(os.path.dirname(key_file), exist_ok=True)
+    except OSError as e:
+        logging.getLogger(__name__).error("用户密钥目录创建失败: %s (%s)", key_file, e)
+        return None
+    try:
+        fd = os.open(key_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            os.write(fd, secrets.token_bytes(32).hex().encode("ascii") + b"\n")
+        finally:
+            os.close(fd)
+        try:
+            os.chmod(key_file, 0o600)
+        except OSError:
+            pass  # Windows 上 chmod 语义受限，创建时 0o600 已尽力
+    except FileExistsError:
+        pass  # 已有密钥，走读取路径
+    except OSError as e:
+        logging.getLogger(__name__).error("用户密钥文件生成失败: %s (%s)", key_file, e)
+        return None
+    try:
+        with open(key_file, "r") as f:
+            key = f.read().strip()
+        return key.encode("utf-8") if key else None
+    except OSError as e:
+        logging.getLogger(__name__).error("用户密钥文件读取失败: %s (%s)", key_file, e)
+        return None
+
+
 def get_patch_key() -> Optional[bytes]:
-    """加载补丁签名密钥（三级优先级）。"""
-    # 环境变量
+    """加载补丁签名密钥（VULN-密钥修复后的三级优先级）。
+
+    1. ``MCA_PATCH_SECRET`` 环境变量（部署级注入，最高优先）
+    2. 用户私有密钥文件 ``~/.config/logbrain/patch.key``
+       （首次运行自动生成：``secrets.token_bytes(32)``，0o600 独占创建，
+       不落项目目录）
+    3. 遗留 ``.patch_key``（仅固定路径 = 当前工作目录，权限检查 + 弃用告警，
+       **不做向上扫描**——上层目录劫持无效）
+
+    返回 None 时所有调用方必须 fail-closed（拒绝签名相关操作）。
+    """
     env_key = os.environ.get("MCA_PATCH_SECRET")
     if env_key:
         return env_key.encode("utf-8")
 
-    # .patch_key 文件
-    root = _find_project_root()
-    key_file = os.path.join(root, ".patch_key")
-    if os.path.exists(key_file):
-        with open(key_file, "r") as f:
-            key = f.read().strip()
-            if key:
-                return key.encode("utf-8")
+    key = _load_legacy_key_file(os.path.join(_find_project_root(), ".patch_key"))
+    if key:
+        return key
 
-    return None
+    return _ensure_user_key()
