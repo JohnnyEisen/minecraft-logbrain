@@ -159,7 +159,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "dlc_search_paths": ["./dlcs"],
     "dlc_strict_dependency_check": True,
     
-    "dlc_signature_required": False,
+    # VULN-003 修复: 出厂默认必须要求 DLC 签名（fail-closed）。
+    # 原值 False 覆盖了 BrainCore 的安全默认（core.py:292 也为 True），
+    # 导致未配置公钥时任意 dlcs/*.py 在启动时被执行（红队链D实证）。
+    "dlc_signature_required": True,
     "dlc_signature_verify_if_present": True,
     "dlc_public_key_pem_files": [],
     
