@@ -95,3 +95,60 @@ class TestPatchSandbox:
         r = execute_patch_sandboxed(
             "def apply():\n    eval('1+2')\n", "eval", PermissionLevel.ADMIN)
         assert not r.success, r.message
+
+# ── VULN-001 回归: 帧攀爬沙箱逃逸必须被拒 ──
+def test_sandbox_blocks_traceback_frame_escape(tmp_path):
+    """红队实战载荷: __traceback__.tb_frame + f_back 攀爬取真实 builtins。"""
+    from mca_core.patch_manager.patch_sandbox import (
+        PermissionLevel,
+        execute_patch_sandboxed,
+    )
+
+    marker = tmp_path / "pwned_marker.txt"
+    escape_code = (
+        "try:\n"
+        "    raise RuntimeError('boom')\n"
+        "except Exception as _e:\n"
+        "    _f = _e.__traceback__.tb_frame\n"
+        "    while _f is not None:\n"
+        "        _b = _f.f_globals.get('__builtins__')\n"
+        "        if _b is not None:\n"
+        "            _bi = _b if isinstance(_b, dict) else vars(_b)\n"
+        "            if 'open' in _bi:\n"
+        "                break\n"
+        "        _f = _f.f_back\n"
+        "    _bi['open'](r'" + str(marker) + "', 'w').write('ESCAPED')\n"
+        "\n"
+        "def apply():\n"
+        "    return 'x'\n"
+    )
+    result = execute_patch_sandboxed(
+        code=escape_code, patch_id="vuln001_regression",
+        level=PermissionLevel.RESTRICTED,
+    )
+    assert not result.success, f"逃逸载荷被执行成功: {result.message}"
+    assert not marker.exists(), "标记文件被写入，沙箱被逃逸"
+
+
+def test_sandbox_blocks_getattr_frame_pivot(tmp_path):
+    """getattr(name) 形式的帧属性枢轴也必须被运行时代理拦截。"""
+    from mca_core.patch_manager.patch_sandbox import (
+        PermissionLevel,
+        execute_patch_sandboxed,
+    )
+
+    escape_code = (
+        "def apply():\n"
+        "    _parts = ['tb_', 'frame']\n"
+        "    _name = _parts[0] + _parts[1]\n"
+        "    try:\n"
+        "        raise RuntimeError('boom')\n"
+        "    except Exception as _e:\n"
+        "        getattr(_e, _name)\n"
+        "    return 'x'\n"
+    )
+    result = execute_patch_sandboxed(
+        code=escape_code, patch_id="vuln001_getattr",
+        level=PermissionLevel.RESTRICTED,
+    )
+    assert not result.success, "getattr 帧属性枢轴未被拦截"

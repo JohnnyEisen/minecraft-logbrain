@@ -113,6 +113,10 @@ def _make_restricted_builtins(level: PermissionLevel) -> dict[str, Any]:
         "__subclasses__", "__bases__", "__mro__", "__globals__",
         "__code__", "__closure__", "__builtins__", "__loader__",
         "__getattribute__", "__dict__",
+        # VULN-001 修复: traceback/帧对象家族 — 帧攀爬逃逸路径
+        "__traceback__", "tb_frame", "f_back", "f_builtins",
+        "f_globals", "f_locals", "gi_frame", "cr_frame", "ag_frame",
+        "__frame__", "gi_yieldfrom", "ag_running",
     })
     _original_getattr = safe.get("getattr", builtins.getattr)
     def _safe_getattr(obj, name, *args):
@@ -231,6 +235,11 @@ def _safe_import(name, globals=None, locals=None, fromlist=(), level=0):
     """
     base = name.split(".")[0]
     full = name
+    # VULN-001 加固: 拒绝相对导入（level>0 时 name 可能为空/相对路径）
+    if level:
+        raise ImportError(
+            f"沙箱安全限制: 不允许相对导入 (level={level})。"
+        )
     if base not in _SANDBOX_SAFE_MODULES and full not in _SANDBOX_SAFE_MODULES:
         raise ImportError(
             f"沙箱安全限制: 不允许导入 '{name}'。"
@@ -354,6 +363,10 @@ def execute_patch_sandboxed(
     _SANDBOX_INTROSPECTION_PATTERNS = [
         "__subclasses__", "__bases__", "__mro__", "__globals__",
         "__code__", "__closure__",
+        # VULN-001 修复: 帧攀爬逃逸家族
+        "__traceback__", "tb_frame", "f_back", "f_builtins",
+        "f_globals", "f_locals", "gi_frame", "cr_frame", "ag_frame",
+        "__frame__",
     ]
     code_lower = code.lower()
     for pat in _SANDBOX_INTROSPECTION_PATTERNS:
@@ -366,6 +379,33 @@ def execute_patch_sandboxed(
                 restricted_operations=[pat],
                 execution_time_ms=(time.perf_counter() - start) * 1000,
             )
+
+    # ── VULN-001 修复: AST 级属性访问检查（capability 模型）──
+    # 文本扫描可被字符串拼接绕过，运行时代理拦不住 `obj.__traceback__` 这类
+    # 直接属性访问。在 AST 层拒绝任何对帧/traceback 家族属性的访问，
+    # 保证帧对象永远不会到达补丁代码。
+    _AST_FORBIDDEN_ATTRS = {
+        "__subclasses__", "__bases__", "__mro__", "__globals__",
+        "__code__", "__closure__", "__builtins__", "__loader__",
+        "__traceback__", "tb_frame", "f_back", "f_builtins",
+        "f_globals", "f_locals", "gi_frame", "cr_frame", "ag_frame",
+        "__frame__",
+    }
+    try:
+        import ast as _ast
+        _tree = _ast.parse(code)
+        for _node in _ast.walk(_tree):
+            if isinstance(_node, _ast.Attribute) and _node.attr in _AST_FORBIDDEN_ATTRS:
+                return SandboxResult(
+                    success=False,
+                    error=f"沙箱禁止内省属性访问: {_node.attr}",
+                    message=f"补丁 {patch_id} 包含禁止的属性访问: {_node.attr}",
+                    permission_level=level.value,
+                    restricted_operations=[_node.attr],
+                    execution_time_ms=(time.perf_counter() - start) * 1000,
+                )
+    except SyntaxError:
+        pass  # 语法错误交给后续 compile 阶段报告
 
     try:
         sandbox_globals = create_sandbox_globals(level)
