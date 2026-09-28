@@ -51,7 +51,16 @@ if /i "%USE_MIRROR%"=="Y" (
 )
 
 echo.
-echo [Step 2] Installing PyTorch...
+echo [Step 2] Installing desktop dependencies...
+"%PYTHON_EXE%" -m pip install -e ".[desktop]" %PIP_ARGS%
+if errorlevel 1 (
+    echo [ERROR] Failed to install desktop dependencies.
+    pause
+    exit /b
+)
+
+echo.
+echo [Step 3] Installing PyTorch...
 set /p INSTALL_GPU="Do you want to install NVIDIA GPU support (CUDA 12.1)? (Y/N) [Default N]: "
 if /i "%INSTALL_GPU%"=="Y" (
     echo [GPU Mode] Installing PyTorch with CUDA 12.1 support...
@@ -63,11 +72,11 @@ if /i "%INSTALL_GPU%"=="Y" (
 )
 
 echo.
-echo [Step 3] Installing Transformers (for CodeBERT)...
+echo [Step 4] Installing Transformers (for CodeBERT)...
 "%PYTHON_EXE%" -m pip install transformers %PIP_ARGS%
 
 echo.
-echo [Step 4] Installing Scikit-Learn (optional utils)...
+echo [Step 5] Installing Scikit-Learn (optional utils)...
 "%PYTHON_EXE%" -m pip install scikit-learn %PIP_ARGS%
 
 echo.

@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import os
-import sys
 from typing import Optional
 
 from .core import BrainCore
@@ -71,29 +69,24 @@ def _cmd_train(args: argparse.Namespace) -> int:
 
 
 def _cmd_demo(args: argparse.Namespace) -> int:
-    """运行仓库内置 demo（兼容 Bain.py 入口）。
+    """运行 BrainCore 内置演示，避免依赖根目录兼容脚本。"""
 
-    目的：把“库/框架代码”与“演示脚本”入口统一到 brain CLI，减少根目录脚本作为唯一入口带来的结构混乱。
-    """
+    async def runner() -> None:
+        brain = BrainCore(config_path=args.config)
+        if brain.config.get("auto_load_dlcs", True):
+            brain.load_all_dlcs()
+        try:
+            print(brain.health_check())
+        finally:
+            await brain.shutdown()
 
-    import importlib
-    import inspect
-
-    mod = importlib.import_module("Bain")
-    if not hasattr(mod, "main"):
-        raise RuntimeError("Bain.py 未暴露 main()，无法运行 demo")
-
-    demo_main = getattr(mod, "main")
-    if inspect.iscoroutinefunction(demo_main):
-        asyncio.run(demo_main(config_path=args.config))
-        return 0
-    demo_main(config_path=args.config)
+    asyncio.run(runner())
     return 0
 
 
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(prog="brain")
-    parser.add_argument("--config", default=os.getenv("BRAIN_CONFIG", "config/brain_config.json"))
+    parser.add_argument("--config", default="config/brain_config.json")
 
     sub = parser.add_subparsers(dest="cmd", required=True)
 
@@ -110,7 +103,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     p_train.add_argument("--concurrency", default="20")
     p_train.set_defaults(func=_cmd_train)
 
-    p_demo = sub.add_parser("demo", help="Run built-in demo (Bain.py)")
+    p_demo = sub.add_parser("demo", help="Run built-in BrainCore demo")
     p_demo.set_defaults(func=_cmd_demo)
 
     args = parser.parse_args(argv)

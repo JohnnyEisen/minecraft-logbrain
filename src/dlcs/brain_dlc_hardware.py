@@ -323,12 +323,15 @@ class HardwareAcceleratorDLC(BrainDLC):
         cores_per_node = max(1, total_cores // numa_count)
         for idx, node_id in enumerate(self.numa_nodes):
             device_id = f"cpu_numa{node_id}" if numa_count > 1 else "cpu"
-            cpu_dev = NumaCPUDevice(device_id, numa_node=node_id)
-            cpu_dev.pre_allocate_pool(
-                count=min(32, cores_per_node),
-                size_per=1024 * 1024 * 4,  # 4 MB per buffer = ~128 MB pool
-                dtype=self.np.float32,
-            )
+            if numa_count > 1:
+                cpu_dev = NumaCPUDevice(device_id, numa_node=node_id)
+                cpu_dev.pre_allocate_pool(
+                    count=min(32, cores_per_node),
+                    size_per=1024 * 1024 * 4,  # 4 MB per buffer = ~128 MB pool
+                    dtype=self.np.float32,
+                )
+            else:
+                cpu_dev = CPUDevice(device_id)
             self.device_objects[device_id] = cpu_dev
         # 确保 "cpu" 始终存在（向后兼容）
         if "cpu" not in self.device_objects:

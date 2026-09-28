@@ -5,7 +5,7 @@
 - DLC 基类 BrainDLC
 - 类型定义（DLCManifest / BrainDLCType）
 
-顶层脚本（如 Bain.py）只负责：定义 DLC 实现与演示入口。
+DLC 实现通过 `dlcs/` 目录发现，演示入口统一由 `brain_system.cli` 提供。
 """
 from __future__ import annotations
 

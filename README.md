@@ -22,11 +22,14 @@
 ## 安装与启动
 
 ```bash
-# 基础安装（纯规则分析，无需 GPU）
-pip install -r requirements.txt
+# 桌面应用安装（纯规则分析，无需 GPU）
+pip install -e .[desktop]
 
 # AI 增强安装
-pip install -e .[ai]
+pip install -e .[desktop,ai]
+
+# 兼容旧安装流程
+pip install -r requirements.txt
 
 # 启动
 python main.py

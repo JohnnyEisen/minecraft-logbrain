@@ -21,10 +21,22 @@ Repository = "https://github.com/JohnnyEisen/minecraft-logbrain.git"
 Issues = "https://github.com/JohnnyEisen/minecraft-logbrain/issues"
 
 [project.optional-dependencies]
+desktop = [
+  "PyQt6>=6.5.0",
+  "networkx>=3.0",
+  "matplotlib>=3.7",
+  "psutil>=5.9.0",
+  "GPUtil>=1.4.0",
+  "watchdog>=4.0.0",
+  "openpyxl>=3.1.5",
+  "httpx>=0.28.0",
+  "numpy>=1.26.0",
+  "idna>=3.15",
+  "tomli>=2.0.1; python_version < '3.11'",
+]
 ai = [
   "torch>=2.0.0",
   "transformers>=4.38.0",
-  "numpy>=1.26.0",
 ]
 crypto = [
   "cryptography>=42.0.0",
@@ -46,7 +58,7 @@ ha = [
 ]
 
 [project.scripts]
-logbrain = "main:main"
+logbrain = "mca_core.launcher:launch_app"
 logbrain-cli = "brain_system.cli:main"
 
 [tool.setuptools.packages.find]

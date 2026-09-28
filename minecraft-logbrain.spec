@@ -70,6 +70,8 @@ a = Analysis(
         'mca_core.detectors.out_of_memory',
         'mca_core.detectors.mixin_conflicts',
         'mca_core.services',
+        'mca_core.services.application_services',
+        'mca_core.launcher',
         'mca_core.controllers',
         'mca_core.main_window_mixins',
     ],
@@ -82,8 +84,6 @@ a = Analysis(
         'pdb', 'doctest',
         # DLCs
         'dlcs',
-        # Brain系统 (可选插件)
-        'brain_system',
     ] + heavy_excludes,
     noarchive=False,
     optimize=2,

@@ -1,4 +1,4 @@
-API 参考 — v2.1.2
+API 参考 — v2.1.3
 ====================
 
 .. contents::
@@ -146,3 +146,52 @@ v2.1.2 API 变更
    * - ``security/__init__.py``
      - 序列化
      - pickle 格式直接拒绝；set_serialization_secret 仅允许一次
+
+----
+
+v2.1.3 架构加固
+-----------------
+
+.. list-table::
+   :header-rows: 1
+   :widths: 25 15 60
+
+   * - 模块
+     - 类型
+     - 说明
+   * - ``auth.py``
+     - 反向代理
+     - ``verify_auth`` 从 ``X-Forwarded-For`` 取真实客户端 IP
+   * - ``di.py``
+     - 容器锁定
+     - ``DIContainer.seal()`` 锁定后拒绝新注册；字符串键限制 ``system./config.`` 前缀
+   * - ``config.py``
+     - TLS/验证
+     - ``ConsulConfigSource`` 新增 ``token``/``scheme`` 参数；``_validate_config_schema`` 18 项类型检查
+   * - ``config.py``
+     - 权限
+     - 配置文件 group/other write 权限检测
+   * - ``dlc_manager.py``
+     - 完整性
+     - ``load_all`` 文件签名验证后 + exec_module 前后 SHA-256 比对
+   * - ``patch_downloader.py``
+     - 网络
+     - 连接后从 socket 获取实际 IP 重新验证内网 (DNS rebinding)
+   * - ``patch_sandbox.py``
+     - 消毒
+     - ``_sanitize_imported_module`` 递归 depth=3 + 下划线前缀检查
+   * - ``patch_sandbox.py``
+     - 超时
+     - 僵尸线程追踪告警 (>10 个) + 线程命名 sandbox-{id}
+   * - ``integration/bus.py``
+     - 访问控制
+     - 重复子系统注册抛 ValueError；``list_subsystems`` 默认隐藏敏感信息
+   * - ``integration/bus.py``
+     - 监控
+     - 超时请求记录活跃线程数
+   * - ``security/__init__.py``
+     - 序列化
+     - ``set_serialization_secret`` 仅允许一次调用
+   * - ``server.py``
+     - 错误处理
+     - 补丁 API 加载失败记录 error 日志

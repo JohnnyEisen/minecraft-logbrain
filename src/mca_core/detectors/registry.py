@@ -165,7 +165,6 @@ class DetectorRegistry:
         Returns:
             排序后的检测器列表（优先级低的在前）
         """
-        self._ensure_loaded()
         if not self._sorted:
             self._detectors.sort(key=lambda d: d.get_priority())
             self._sorted = True

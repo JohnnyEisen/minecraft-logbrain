@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import copy
-import hashlib
-import json
 import logging
 import multiprocessing
 import os
@@ -13,6 +11,7 @@ import time
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Callable, Dict, Optional, Set, Tuple
 
 from packaging.specifiers import SpecifierSet
@@ -26,23 +25,35 @@ from .models import DLCManifest, DLCState
 from brain_system import __version__
 
 from .cache import LruTtlCache
-from .observability import build_observability, start_span
-from .retry import RetryPolicy, async_retry
+from .execution_service import BrainExecutionService
+from .observability import build_observability
+from .retry import RetryPolicy
 from .security import SignatureVerificationError, load_public_keys_from_files, verify_dlc_signature
 from .config import ConsulConfigSource, FileConfigSource
 from .config_validator import build_config, validate_config
 from .ha import LeaderElectionConfig, LeaderElector
 
 
+def _freeze_config(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _freeze_config(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return tuple(_freeze_config(item) for item in value)
+    return value
+
+
+def _thaw_config(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _thaw_config(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_thaw_config(item) for item in value]
+    return value
+
+
 try:
     import psutil  # type: ignore
 except Exception:  # pragma: no cover
     psutil = None
-
-
-def _invoke_callable(func: Callable[..., Any], args: tuple[Any, ...], kwargs: Dict[str, Any]) -> Any:
-    """在进程池中执行可序列化调用。"""
-    return func(*args, **kwargs)
 
 
 class BrainCore:
@@ -76,15 +87,10 @@ class BrainCore:
         self.name = "LogBrain Core Scheduler"
         self.version = __version__
 
-        from types import MappingProxyType
-
         self._config_path = config_path
         self._config_raw = self._load_config(config_path)
-        # 将列表值转为 tuple 后再包装 MappingProxyType (VULN-008 fix)
-        self._config_deep_readonly = dict(self._config_raw)
-        for k, v in self._config_deep_readonly.items():
-            if isinstance(v, list):
-                self._config_deep_readonly[k] = tuple(v)
+        # 递归冻结列表后再包装 MappingProxyType (VULN-008 fix)
+        self._config_deep_readonly = _freeze_config(self._config_raw)
         self.config = MappingProxyType(self._config_deep_readonly)
         self._setup_logging()
 
@@ -133,6 +139,7 @@ class BrainCore:
             backoff_multiplier=float(self.config.get("retry_backoff_multiplier", 2.0)),
             jitter_ratio=float(self.config.get("retry_jitter_ratio", 0.2)),
         )
+        self.execution_service = BrainExecutionService(self)
 
         self._config_source = self._build_config_source()
         if self._config_source is not None and bool(self.config.get("enable_config_watch", False)):
@@ -321,10 +328,10 @@ class BrainCore:
             return
         
         # 备份当前配置以便回滚
-        old_config = copy.deepcopy(self.config)
+        old_config = _thaw_config(copy.deepcopy(dict(self.config)))
 
         # 在完整候选配置上做验证，避免只校验 patch 带来的遗漏。
-        candidate_config = copy.deepcopy(self.config)
+        candidate_config = _thaw_config(copy.deepcopy(dict(self.config)))
         candidate_config.update(copy.deepcopy(new_config))
         
         # 验证新配置
@@ -379,11 +386,11 @@ class BrainCore:
 
         self.retry_policy = new_policy
         self._previous_valid_config = old_config
-        self._config_raw = candidate_config
+        self._config_raw = _freeze_config(candidate_config)
         self.config = MappingProxyType(self._config_raw)
 
         self._load_public_keys()
-        self._last_valid_config = copy.deepcopy(self.config)
+        self._last_valid_config = copy.deepcopy(dict(self.config))
 
         # 通知各 DLC 配置已变更
         self._notify_dlcs_config_changed()
@@ -407,7 +414,7 @@ class BrainCore:
         Returns:
             当前配置字典的副本。
         """
-        return dict(self.config)
+        return _thaw_config(copy.deepcopy(dict(self.config)))
 
     def rollback_config(self) -> bool:
         """回滚到上一个有效配置。
@@ -420,8 +427,8 @@ class BrainCore:
             logging.info("无可回滚配置")
             return False
 
-        current = copy.deepcopy(self.config)
-        target_config = copy.deepcopy(previous)
+        current = copy.deepcopy(dict(self.config))
+        target_config = _thaw_config(copy.deepcopy(previous))
 
         old_cb = getattr(self.retry_policy, "circuit_breaker", None)
         restored_policy = RetryPolicy(
@@ -448,9 +455,9 @@ class BrainCore:
         )
 
         self.retry_policy = restored_policy
-        self.config = target_config
+        self.config = MappingProxyType(_freeze_config(target_config))
         self._load_public_keys()
-        self._last_valid_config = copy.deepcopy(self.config)
+        self._last_valid_config = copy.deepcopy(dict(self.config))
         self._previous_valid_config = current
 
         logging.info("配置已回滚")
@@ -582,157 +589,23 @@ class BrainCore:
         *args: Any,
         timeout: float | None = None,
         priority: int = 0,
-        **kwargs: Any
+        **kwargs: Any,
     ) -> Any:
-        """执行计算任务，支持超时、优先级和取消。
-
-        Args:
-            task_id: 任务唯一标识。
-            func: 要执行的函数。
-            *args: 函数位置参数。
-            timeout: 超时时间（秒），None 使用配置默认值。
-            priority: 任务优先级（0=普通，1=高，2=紧急）。
-            **kwargs: 函数关键字参数。
-
-        Returns:
-            函数执行结果。
-
-        Raises:
-            TimeoutError: 任务执行超时。
-            asyncio.CancelledError: 任务被取消。
-        """
-        self.performance_stats["total_tasks"] += 1
-
-        # 使用配置的超时时间
-        effective_timeout = timeout if timeout is not None else self.config.get("task_default_timeout", 30.0)
-
-        cache_key = self._generate_cache_key(func, *args, **kwargs)
-        cached = self.result_cache.get(cache_key)
-        if cached is not None:
-            if self.obs.metrics_enabled and self.obs.cache_hits is not None:
-                try:
-                    self.obs.cache_hits.inc()
-                except Exception as e:
-                    logging.debug("Failed to increment cache_hits metric: %s", e)
-            return cached
-
-        if self.obs.metrics_enabled and self.obs.cache_misses is not None:
-            try:
-                self.obs.cache_misses.inc()
-            except Exception as e:
-                logging.debug("Failed to increment cache_misses metric: %s", e)
-
-        # 慢任务追踪
-        slow_task_threshold = float(self.config.get("slow_task_threshold", 5.0))
-
-        async def _run_once() -> Any:
-            if asyncio.iscoroutinefunction(func):
-                return await func(*args, **kwargs)
-
-            loop = asyncio.get_running_loop()
-
-            executor_kind = self._select_executor_kind(task_id=task_id, priority=priority, args=args, kwargs=kwargs)
-            if executor_kind == "process" and self.process_pool is not None:
-                self.performance_stats["process_dispatched_tasks"] += 1
-                return await loop.run_in_executor(self.process_pool, _invoke_callable, func, args, kwargs)
-
-            self.performance_stats["thread_dispatched_tasks"] += 1
-            return await loop.run_in_executor(self.thread_pool, _invoke_callable, func, args, kwargs)
-
-        start_time = time.time()
-        
-        SLOW_TASKS_MAX_SIZE = 100
-        
-        def _check_slow_task(elapsed: float) -> None:
-            if elapsed > slow_task_threshold:
-                logging.warning(
-                    "Slow task detected: %s took %.2fs (threshold: %.2fs)",
-                    task_id, elapsed, slow_task_threshold
-                )
-                slow_tasks = self.performance_stats.setdefault("slow_tasks", [])
-                slow_tasks.append({
-                    "task_id": task_id,
-                    "duration": elapsed,
-                    "timestamp": time.time(),
-                })
-                while len(slow_tasks) > SLOW_TASKS_MAX_SIZE:
-                    slow_tasks.pop(0)
-
-        with start_span(self.obs, f"compute:{task_id}"):
-            try:
-                # 使用带超时的重试策略
-                policy_with_timeout = RetryPolicy(
-                    max_attempts=self.retry_policy.max_attempts,
-                    initial_delay_seconds=self.retry_policy.initial_delay_seconds,
-                    max_delay_seconds=self.retry_policy.max_delay_seconds,
-                    backoff_multiplier=self.retry_policy.backoff_multiplier,
-                    jitter_ratio=self.retry_policy.jitter_ratio,
-                    timeout_seconds=effective_timeout,
-                    circuit_breaker=self.retry_policy.circuit_breaker,
-                )
-                
-                if policy_with_timeout.max_attempts > 1:
-                    result = await async_retry(_run_once, policy=policy_with_timeout)
-                else:
-                    # 单次执行也需要超时控制
-                    if effective_timeout > 0:
-                        result = await asyncio.wait_for(
-                            _run_once(), timeout=effective_timeout
-                        )
-                    else:
-                        result = await _run_once()
-                        
-            except asyncio.TimeoutError as e:
-                elapsed = time.time() - start_time
-                _check_slow_task(elapsed)
-                if self.obs.metrics_enabled and self.obs.task_errors is not None:
-                    try:
-                        self.obs.task_errors.labels(task_id=str(task_id)).inc()
-                    except Exception as metric_err:
-                        logging.debug("Failed to increment task_errors metric: %s", metric_err)
-                logging.error("计算任务超时 %s: %.2fs > %.2fs", task_id, elapsed, effective_timeout)
-                raise TimeoutError(f"Task {task_id} timed out after {elapsed:.2f}s") from e
-            except Exception as e:
-                elapsed = time.time() - start_time
-                _check_slow_task(elapsed)
-                if self.obs.metrics_enabled and self.obs.task_errors is not None:
-                    try:
-                        self.obs.task_errors.labels(task_id=str(task_id)).inc()
-                    except Exception as metric_err:
-                        logging.debug("Failed to increment task_errors metric: %s", metric_err)
-                logging.error("计算任务失败 %s: %s", task_id, e)
-                raise
-
-        elapsed = time.time() - start_time
-        _check_slow_task(elapsed)
-        
-        self.result_cache.set(cache_key, result)
-
-        if self.obs.metrics_enabled and self.obs.task_seconds is not None:
-            try:
-                self.obs.task_seconds.labels(task_id=str(task_id)).observe(elapsed)
-            except Exception as e:
-                logging.debug("Failed to observe task_seconds metric: %s", e)
-
-        self.performance_stats["completed_tasks"] += 1
-        completed = self.performance_stats["completed_tasks"]
-        prev_avg = float(self.performance_stats["avg_compute_time"])
-        self.performance_stats["avg_compute_time"] = ((prev_avg * (completed - 1)) + elapsed) / completed
-
-        return result
+        """兼容入口：委托给任务执行服务。"""
+        return await self.execution_service.compute(
+            task_id,
+            func,
+            *args,
+            timeout=timeout,
+            priority=priority,
+            **kwargs,
+        )
 
     def _estimate_payload_size(self, args: tuple[Any, ...], kwargs: Dict[str, Any]) -> int:
-        """粗略估算参数序列化体积，用于避免进程池过载。"""
-        try:
-            return len(repr((args, kwargs)).encode("utf-8", errors="ignore"))
-        except Exception:
-            return 0
+        return self.execution_service.estimate_payload_size(args, kwargs)
 
     def _matches_prefixes(self, value: str, prefixes: list[str]) -> bool:
-        for prefix in prefixes:
-            if value.startswith(str(prefix)):
-                return True
-        return False
+        return self.execution_service.matches_prefixes(value, prefixes)
 
     def _select_executor_kind(
         self,
@@ -742,56 +615,15 @@ class BrainCore:
         args: tuple[Any, ...],
         kwargs: Dict[str, Any],
     ) -> str:
-        """根据任务提示、优先级与负载估计选择执行器类型。"""
-        task_name = str(task_id)
-        strategy = str(self.config.get("executor_routing_strategy", "balanced")).lower()
-
-        cpu_prefixes = self.config.get("cpu_task_prefixes", ["cpu_", "cpu_task", "thread_cpu_"])
-        if not isinstance(cpu_prefixes, list):
-            cpu_prefixes = ["cpu_", "cpu_task", "thread_cpu_"]
-
-        io_prefixes = self.config.get("io_task_prefixes", ["io_", "net_", "disk_"])
-        if not isinstance(io_prefixes, list):
-            io_prefixes = ["io_", "net_", "disk_"]
-
-        is_cpu_hint = self._matches_prefixes(task_name, [str(x) for x in cpu_prefixes])
-        is_io_hint = self._matches_prefixes(task_name, [str(x) for x in io_prefixes])
-
-        payload_limit = int(self.config.get("process_pool_payload_max_bytes", 262_144))
-        payload_size = self._estimate_payload_size(args, kwargs)
-        process_available = self.process_pool is not None and payload_size <= payload_limit
-
-        # 高优先级默认低延迟：优先线程池。
-        if priority >= 2:
-            return "thread"
-
-        # 明确低优先级 + CPU 提示：优先进程池。
-        if priority <= -1 and process_available and is_cpu_hint and not is_io_hint:
-            return "process"
-
-        if strategy == "latency":
-            return "thread"
-
-        if strategy == "throughput":
-            if process_available and is_cpu_hint and not is_io_hint:
-                return "process"
-            return "thread"
-
-        # balanced: safe default, thread pool for everything (avoids IPC overhead).
-        # CPU tasks route to process pool only in "throughput" mode (explicit opt-in).
-        return "thread"
+        return self.execution_service.select_executor_kind(
+            task_id=task_id,
+            priority=priority,
+            args=args,
+            kwargs=kwargs,
+        )
 
     def _generate_cache_key(self, func: Callable[..., Any], *args: Any, **kwargs: Any) -> str:
-        func_name = getattr(func, "__name__", str(func))
-        
-        try:
-            key_repr = f"{func_name}:{args}:{kwargs}"
-            result = hashlib.sha256(key_repr.encode("utf-8")).hexdigest()
-            return result
-        except Exception:
-            key_data = (func_name, args, kwargs)
-            key_str = json.dumps(key_data, sort_keys=True, default=str)
-            return hashlib.sha256(key_str.encode("utf-8")).hexdigest()
+        return self.execution_service.generate_cache_key(func, *args, **kwargs)
 
     # ---------------- 监控 / 生命周期 ----------------
 

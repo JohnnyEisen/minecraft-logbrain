@@ -32,19 +32,18 @@ if %errorlevel% neq 0 (
     )
 )
 
+echo [INFO] Installing project desktop dependencies...
+%PYTHON_CMD% -m pip install -e ".[desktop]"
+if %errorlevel% neq 0 (
+    echo [ERROR] Failed to install project dependencies.
+    pause & exit /b 1
+)
+
 :: 3. Clean old builds (keep .spec)
 if exist build rmdir /s /q build
 if exist dist rmdir /s /q dist
 
-:: 4. Collect optional libs for Brain DLC users
-echo [INFO] Checking for optional AI/ML libraries for DLC package...
-if exist lib rmdir /s /q lib
-%PYTHON_CMD% "scripts/setup/collect_libs.py"
-if %errorlevel% neq 0 (
-    echo [WARN] collect_libs.py failed (non-fatal).
-)
-
-:: 5. Build optimized EXE (no AI/ML bloat)
+:: 4. Build optimized EXE (no AI/ML bloat)
 echo.
 echo [INFO] Building core EXE (PyInstaller)...
 echo [INFO] Note: AI/ML libraries (torch, transformers, etc.) are EXCLUDED.
@@ -56,14 +55,14 @@ if %errorlevel% neq 0 (
     pause & exit /b 1
 )
 
-:: 6. Collect optional libs for DLC package
-if exist lib (
-    echo [INFO] Copying lib to dist for DLC package...
-    xcopy /E /I /Y lib dist\minecraft-logbrain\lib >nul
-    rmdir /s /q lib
+:: 5. Collect optional libs for Brain DLC users
+echo [INFO] Checking for optional AI/ML libraries for DLC package...
+%PYTHON_CMD% "scripts/setup/collect_libs.py"
+if %errorlevel% neq 0 (
+    echo [WARN] collect_libs.py failed (non-fatal).
 )
 
-:: 7. Final clean
+:: 6. Final clean
 if exist build_assets rmdir /s /q build_assets
 
 echo.

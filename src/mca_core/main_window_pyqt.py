@@ -51,25 +51,10 @@ from PyQt6.QtWidgets import (
 
 from config.constants import CONFIG_FILE, GPU_ISSUES_FILE
 from brain_system import __version__
-from mca_core.hardware_analysis import analyze_hardware_log
-from mca_core.services.config_service import ConfigService
 from mca_core.diagnostic_engine import DiagnosticEngine
-from mca_core.services.log_service import LogService
-from mca_core.services.system_service import SystemService
-from mca_core.archive_utils import (
-    collect_logs_from_paths,
-    cleanup_temp_dir,
-    is_archive_file,
-    is_log_file,
-)
-from mca_core.analysis_engine import (
-    load_gpu_rules,
-    format_hardware_report,
-    scan_mods_directory,
-    write_dep_csv,
-    read_history_csv,
-    build_nx_graph,
-)
+from mca_core.archive_utils import is_archive_file
+from mca_core.analysis_engine import build_nx_graph
+from mca_core.services.application_services import ApplicationServices, export_dependencies
 from mca_core.screen_adapter_pyqt import ScreenAdapter, WindowStateManager
 from mca_core.styles_pyqt import CSS
 try:
@@ -477,11 +462,13 @@ class SiliconeCapsuleApp(MenuMixin, AutoTestMixin, AnalysisMixin, QMainWindow):
 
     def _init_backend(self) -> None:
         """初始化后端服务。"""
-        self.log_service = LogService()
-        self.config_service = ConfigService(CONFIG_FILE)
-        data_dir = os.path.join(ROOT_DIR, "data")
-        os.makedirs(data_dir, exist_ok=True)
-        self.engine = DiagnosticEngine(data_dir=data_dir)
+        self._services = ApplicationServices.create(ROOT_DIR, CONFIG_FILE)
+        self.log_service = self._services.log_service
+        self.config_service = self._services.config_service
+        self.engine = self._services.diagnostic_engine
+        self.ingestion_service = self._services.ingestion
+        self.hardware_service = self._services.hardware
+        self.history_service = self._services.history
         self.file_path = ""
         self.current_dep_pairs: set[tuple[str, str]] = set()
         self.current_mods: dict[str, set] = {}
@@ -747,7 +734,7 @@ class SiliconeCapsuleApp(MenuMixin, AutoTestMixin, AnalysisMixin, QMainWindow):
             return
 
         try:
-            write_dep_csv(file_path, self.current_dep_pairs, self.current_mods)
+            export_dependencies(file_path, self.current_dep_pairs, self.current_mods)
             QMessageBox.information(self, "导出成功", f"依赖关系已导出至:\n{file_path}")
         except Exception as e:
             QMessageBox.critical(self, "导出失败", f"无法导出依赖关系: {e}")
@@ -869,26 +856,16 @@ class SiliconeCapsuleApp(MenuMixin, AutoTestMixin, AnalysisMixin, QMainWindow):
     def refresh_hardware_analysis(self) -> None:
         """刷新硬件分析。"""
         text = self.log_text_edit.toPlainText() or ""
-        system_info: dict[str, Any] = {}
-        try:
-            system_info = SystemService().get_system_info()
-        except Exception:
-            system_info = {}
-
-        gpu_rules = load_gpu_rules()
-
-        result = analyze_hardware_log(
+        result, _, report = self.hardware_service.analyze(
             text,
-            current_mods=self.current_mods,
-            system_info=system_info,
-            gpu_rules=gpu_rules,
+            self.current_mods,
             max_snippets=24,
         )
 
         self.hardware_issues = result["suggestions"]
         self.gl_snippets = result["snippets"]
 
-        self.hardware_text_edit.setPlainText(format_hardware_report(result, system_info))
+        self.hardware_text_edit.setPlainText(report)
         self.tabs.setCurrentIndex(3)
 
     def copy_gl_snippets(self) -> None:
@@ -1063,7 +1040,7 @@ class SiliconeCapsuleApp(MenuMixin, AutoTestMixin, AnalysisMixin, QMainWindow):
         tree.setColumnWidth(2, 200)
         
         try:
-            rows = read_history_csv(history_file)
+            rows = self.history_service.read_rows(history_file)
             for row in reversed(rows):
                 if len(row) >= 3:
                     item = QTreeWidgetItem(row[:3])
@@ -1539,98 +1516,61 @@ class SiliconeCapsuleApp(MenuMixin, AutoTestMixin, AnalysisMixin, QMainWindow):
         Args:
             paths: 文件路径列表
         """
-        import time, threading
-        from mca_core.file_io import read_text_limited
-
         if not paths:
             return
 
-        # 收集日志文件（自动处理压缩包解压）
-        log_paths, skipped, temp_dirs = collect_logs_from_paths(paths)
+        load_result = self.ingestion_service.load_paths(paths)
+        self._pending_temp_dirs.extend(load_result.temp_dirs)
 
-        # 记录临时目录供后续清理
-        self._pending_temp_dirs.extend(temp_dirs)
+        if load_result.skipped_message:
+            logger.warning(load_result.skipped_message)
 
-        # 显示跳过信息
-        if skipped:
-            skipped_msg = "部分文件跳过:\n" + "\n".join(f"  - {s}" for s in skipped[:5])
-            if len(skipped) > 5:
-                skipped_msg += f"\n  ... 以及其他 {len(skipped) - 5} 条"
-            logger.warning(skipped_msg)
-
-        if not log_paths:
+        if not load_result.log_paths:
             QMessageBox.warning(
                 self,
                 "未找到日志",
-                f"未在选定文件中找到可分析的日志文件。\n\n{skipped_msg}" if skipped else "未找到可分析的日志文件。"
+                (
+                    "未在选定文件中找到可分析的日志文件。\n\n"
+                    f"{load_result.skipped_message}"
+                    if load_result.skipped_message
+                    else "未找到可分析的日志文件。"
+                ),
             )
             return
 
-        # 统计信息
-        archive_count = len(temp_dirs)
-        direct_count = len(log_paths) - sum(
-            len([f for f in log_paths if temp_dir in f])
-            for temp_dir, _ in temp_dirs
-        )
-        # 更简单地：解压文件数 vs 直接文件数
-        extracted_files = []
-        direct_files = []
-        for lp in log_paths:
-            found = False
-            for td, _ in temp_dirs:
-                if lp.startswith(td):
-                    extracted_files.append(lp)
-                    found = True
-                    break
-            if not found:
-                direct_files.append(lp)
-
-        self._set_status_text(f"状态: 正在加载 {len(direct_files)} 个文件 + {len(temp_dirs)} 个压缩包...")
-
-        # 读取所有日志内容
-        all_contents: list[str] = []
-        for i, log_path in enumerate(log_paths):
-            try:
-                content = read_text_limited(log_path)
-                if content.strip():
-                    all_contents.append(f"# 文件: {os.path.basename(log_path)}\n\n{content}")
-            except Exception as e:
-                logger.warning(f"读取文件失败: {log_path}: {e}")
-
-        if not all_contents:
+        if not load_result.content:
             QMessageBox.warning(self, "读取失败", "所有日志文件均为空或读取失败。")
             return
 
-        # 合并日志内容
-        merged_text = "\n\n" + "=" * 80 + "\n\n".join(all_contents)
-
-        # 显示加载
-        self.log_service.set_log_text(merged_text)
-        self.file_path = log_paths[0]  # 主文件路径
-        self.log_text_edit.setPlainText(merged_text)
+        self._set_status_text(
+            f"状态: 正在加载 {load_result.direct_count} 个文件 + "
+            f"{load_result.archive_count} 个压缩包..."
+        )
+        self.log_service.set_log_text(load_result.content)
+        self.file_path = load_result.primary_path
+        self.log_text_edit.setPlainText(load_result.content)
         self.btn_analyze.setEnabled(True)
         self.result_text_edit.clear()
 
-        # 状态摘要
         summary_parts = []
-        if direct_files:
-            summary_parts.append(f"{len(direct_files)} 个文件")
-        if temp_dirs:
-            summary_parts.append(f"{len(temp_dirs)} 个压缩包")
-
-        total_size = sum(len(c.encode('utf-8')) for c in all_contents)
+        if load_result.direct_count:
+            summary_parts.append(f"{load_result.direct_count} 个文件")
+        if load_result.archive_count:
+            summary_parts.append(f"{load_result.archive_count} 个压缩包")
         self._set_status_text(
             f"状态: 已加载 {', '.join(summary_parts)} "
-            f"({len(all_contents)} 篇日志, {total_size / 1024:.1f} KB)"
+            f"({len(load_result.log_paths)} 篇日志, "
+            f"{load_result.total_size_bytes / 1024:.1f} KB)"
         )
 
-        # 异步清理旧的临时目录（延迟 30 秒）
         old_temp_dirs = self._pending_temp_dirs[:]
         self._pending_temp_dirs = []
+
         def _delayed_cleanup():
             time.sleep(30)
             for td, _ in old_temp_dirs:
-                cleanup_temp_dir(td)
+                self.ingestion_service.cleanup_temp_dir(td)
+
         threading.Thread(target=_delayed_cleanup, daemon=True).start()
 
     def on_load_clicked(self) -> None:
@@ -1653,8 +1593,7 @@ class SiliconeCapsuleApp(MenuMixin, AutoTestMixin, AnalysisMixin, QMainWindow):
             file_path: 日志文件路径
         """
         try:
-            from mca_core.file_io import read_text_limited
-            content = read_text_limited(file_path)
+            content = self.ingestion_service.load_file(file_path)
             
             self.log_service.set_log_text(content)
             self.file_path = file_path
@@ -1682,7 +1621,7 @@ class SiliconeCapsuleApp(MenuMixin, AutoTestMixin, AnalysisMixin, QMainWindow):
 
         def _scan_worker() -> None:
             try:
-                mods = scan_mods_directory(folder)
+                mods = self.ingestion_service.scan_mods(folder)
                 
                 def _on_done() -> None:
                     self.current_mods = dict(mods)

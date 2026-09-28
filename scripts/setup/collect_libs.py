@@ -40,9 +40,9 @@ def get_package_path(package_name):
 def main():
     print("[Info] Collecting external libraries...")
     
-    # 输出目录：dist/lib
-    base_dir = Path(__file__).resolve().parent.parent
-    dist_lib = base_dir / "dist" / f"minecraft-logbrain_v{__version__}" / "lib"
+    # 输出目录与 minecraft-logbrain.spec 保持一致。
+    base_dir = Path(__file__).resolve().parent.parent.parent
+    dist_lib = base_dir / "dist" / "minecraft-logbrain" / "lib"
     
     if dist_lib.exists():
         print(f"[Info] Removing old directory: {dist_lib}")
